@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
+import { briefing } from '../briefing'
 import {
+  approachSuccess,
   hourStats,
   languageCounts,
   meanValenceByPlace,
@@ -12,14 +14,23 @@ import {
   weekCounts,
   weekdayStats,
 } from '../stats'
-import type { Approach } from '../types'
-import { computeStreak, daysSinceLast, formatDuration } from '../utils'
+import type { Approach, Sentiment } from '../types'
+import { computeStreak, formatDuration } from '../utils'
 
 type Props = { approaches: Approach[]; onLog: () => void }
+
+const SENTIMENT_ORDER: Sentiment[] = ['positive', 'mixed', 'negative', 'neutral']
+const SENTIMENT_LABEL: Record<Sentiment, string> = {
+  positive: 'Positive',
+  mixed: 'Mixed',
+  negative: 'Negative',
+  neutral: 'Neutral',
+}
 
 export function Stats({ approaches, onLog }: Props) {
   const recs = useMemo(() => recordingsOnly(approaches), [approaches])
   const rec = useMemo(() => recordingStats(approaches), [approaches])
+  const brief = useMemo(() => briefing(approaches), [approaches])
   const weeks = useMemo(() => weekCounts(recs), [recs])
   const hours = useMemo(() => hourStats(recs), [recs])
   const days = useMemo(() => weekdayStats(recs), [recs])
@@ -29,7 +40,7 @@ export function Stats({ approaches, onLog }: Props) {
   const places = useMemo(() => successByPlace(recs, 2), [recs])
   const valencePlaces = useMemo(() => meanValenceByPlace(recs, 2), [recs])
   const streak = useMemo(() => computeStreak(recs), [recs])
-  const since = useMemo(() => daysSinceLast(recs), [recs])
+  const wins = useMemo(() => recs.filter(approachSuccess).length, [recs])
 
   if (recs.length === 0) {
     return (
@@ -49,7 +60,6 @@ export function Stats({ approaches, onLog }: Props) {
     )
   }
 
-  const weekMax = Math.max(weeks.thisWeek, weeks.lastWeek, 1)
   const daypartMax = Math.max(...dayparts.map((d) => d.rate), 0.01)
   const typeMax = Math.max(...placeTypes.map((d) => d.rate), 0.01)
   const hourMax = Math.max(...hours.map((h) => h.rate), 0.01)
@@ -57,6 +67,7 @@ export function Stats({ approaches, onLog }: Props) {
   const placeMax = Math.max(...places.map((p) => p.rate), 0.01)
   const topicMax = Math.max(...rec.topics.map((t) => t.count), 1)
   const valMax = Math.max(...valencePlaces.map((p) => Math.abs(p.valence)), 0.01)
+  const sentTotal = SENTIMENT_ORDER.reduce((s, k) => s + rec.sentiment[k], 0) || 1
 
   return (
     <div className="screen">
@@ -65,53 +76,54 @@ export function Stats({ approaches, onLog }: Props) {
         <h1>Stats</h1>
       </header>
 
-      <div className="stat-grid">
-        <div className="stat-tile">
-          <p className="muted">Conversations</p>
-          <p className="stat-n">{rec.conversations}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Success rate</p>
-          <p className="stat-n">{pct(rec.successRate)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Talk time</p>
-          <p className="stat-n">{formatDuration(rec.talkTimeSeconds)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Contact rate</p>
-          <p className="stat-n">{pct(rec.contactRate)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Schedule rate</p>
-          <p className="stat-n">{pct(rec.scheduleRate)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Rejection rate</p>
-          <p className="stat-n">{pct(rec.rejectionRate)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Questions / talk</p>
-          <p className="stat-n">{rec.questionRate.toFixed(1)}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">This week</p>
-          <p className="stat-n">{weeks.thisWeek}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Last week</p>
-          <p className="stat-n">{weeks.lastWeek}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Streak</p>
-          <p className="stat-n">{streak}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Days since last</p>
-          <p className="stat-n">{since ?? '—'}</p>
-        </div>
+      <div className="hero-stat">
+        <p className="hero-pct">{pct(rec.successRate)}</p>
+        <p className="hero-n">
+          {wins} of {rec.conversations}
+        </p>
+        <p className="hero-week">
+          This week {weeks.thisWeek} · last week {weeks.lastWeek}
+        </p>
+        {brief && (
+          <div className="briefing-card">
+            <p className="briefing-headline">{brief.headline}</p>
+            {brief.detail ? <p className="briefing-detail">{brief.detail}</p> : null}
+          </div>
+        )}
       </div>
 
+      <div className="stat-grid is-compact">
+        <CompactTile label="Contact" value={pct(rec.contactRate)} />
+        <CompactTile label="Schedule" value={pct(rec.scheduleRate)} />
+        <CompactTile label="Rejection" value={pct(rec.rejectionRate)} />
+        <CompactTile label="Talk time" value={formatDuration(rec.talkTimeSeconds)} />
+        <CompactTile label="This week" value={String(weeks.thisWeek)} />
+        <CompactTile label="Streak" value={String(streak)} />
+      </div>
+
+      <p className="section-title">Sentiment</p>
+      <div className="stack-bar" role="img" aria-label="Sentiment mix">
+        {SENTIMENT_ORDER.map((key) => {
+          const n = rec.sentiment[key]
+          if (n === 0) return null
+          return (
+            <div
+              key={key}
+              className={`stack-seg stack-${key}`}
+              style={{ flexGrow: n, flexBasis: 0 }}
+              title={`${SENTIMENT_LABEL[key]} ${n}`}
+            />
+          )
+        })}
+      </div>
+      <p className="stack-legend">
+        {SENTIMENT_ORDER.filter((k) => rec.sentiment[k] > 0).map((key) => (
+          <span key={key}>
+            {SENTIMENT_LABEL[key]} {rec.sentiment[key]}
+            <span className="muted"> · {pct(rec.sentiment[key] / sentTotal)}</span>
+          </span>
+        ))}
+      </p>
 
       <p className="section-title">Success by time of day</p>
       {dayparts.length === 0 ? (
@@ -129,80 +141,6 @@ export function Stats({ approaches, onLog }: Props) {
         placeTypes.map((row) => (
           <Bar key={row.label} label={row.label} value={row.rate} max={typeMax} hint={`${pct(row.rate)} · ${row.count}`} />
         ))
-      )}
-
-      {langs.known > 0 && (
-        <>
-          <p className="section-title">Language mix</p>
-          <div className="stat-grid">
-            <div className="stat-tile">
-              <p className="muted">Hebrew</p>
-              <p className="stat-n">{langs.he}</p>
-            </div>
-            <div className="stat-tile">
-              <p className="muted">English</p>
-              <p className="stat-n">{langs.en}</p>
-            </div>
-            <div className="stat-tile">
-              <p className="muted">Mixed</p>
-              <p className="stat-n">{langs.mixed}</p>
-            </div>
-          </div>
-        </>
-      )}
-
-      <p className="section-title">Sentiment</p>
-      <div className="stat-grid">
-        <div className="stat-tile">
-          <p className="muted">Positive</p>
-          <p className="stat-n">{rec.sentiment.positive}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Negative</p>
-          <p className="stat-n">{rec.sentiment.negative}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Mixed</p>
-          <p className="stat-n">{rec.sentiment.mixed}</p>
-        </div>
-        <div className="stat-tile">
-          <p className="muted">Neutral</p>
-          <p className="stat-n">{rec.sentiment.neutral}</p>
-        </div>
-      </div>
-
-      <svg className="week-svg" viewBox="0 0 100 56" role="img" aria-label="This week versus last week">
-        <rect
-          x="12"
-          y={8 + (40 - (weeks.thisWeek / weekMax) * 40)}
-          width="28"
-          height={(weeks.thisWeek / weekMax) * 40}
-          rx="4"
-          fill="#d4a853"
-        />
-        <rect
-          x="60"
-          y={8 + (40 - (weeks.lastWeek / weekMax) * 40)}
-          width="28"
-          height={(weeks.lastWeek / weekMax) * 40}
-          rx="4"
-          fill="#9a958c"
-        />
-        <text x="26" y="54" textAnchor="middle" fill="#9a958c" fontSize="8">
-          This
-        </text>
-        <text x="74" y="54" textAnchor="middle" fill="#9a958c" fontSize="8">
-          Last
-        </text>
-      </svg>
-
-      {rec.topics.length > 0 && (
-        <>
-          <p className="section-title">Top topics</p>
-          {rec.topics.map((row) => (
-            <Bar key={row.topic} label={row.topic} value={row.count} max={topicMax} />
-          ))}
-        </>
       )}
 
       <p className="section-title">Success by hour</p>
@@ -223,7 +161,7 @@ export function Stats({ approaches, onLog }: Props) {
         ))
       )}
 
-      <p className="section-title">Success by place</p>
+      <p className="section-title">Named places</p>
       {places.length === 0 ? (
         <p className="muted">Need at least two conversations at a place.</p>
       ) : (
@@ -238,7 +176,7 @@ export function Stats({ approaches, onLog }: Props) {
         ))
       )}
 
-      <p className="section-title">Mean valence by place</p>
+      <p className="section-title">Valence by place</p>
       {valencePlaces.length === 0 ? (
         <p className="muted">Need at least two conversations at a place.</p>
       ) : (
@@ -252,6 +190,35 @@ export function Stats({ approaches, onLog }: Props) {
           />
         ))
       )}
+
+      {rec.topics.length > 0 && (
+        <>
+          <p className="section-title">Topics</p>
+          {rec.topics.map((row) => (
+            <Bar key={row.topic} label={row.topic} value={row.count} max={topicMax} hint={String(row.count)} />
+          ))}
+        </>
+      )}
+
+      {langs.known > 0 && (
+        <>
+          <p className="section-title">Language mix</p>
+          <p className="lang-mix">
+            {langs.he > 0 && <span>Hebrew {langs.he}</span>}
+            {langs.en > 0 && <span>English {langs.en}</span>}
+            {langs.mixed > 0 && <span>Mixed {langs.mixed}</span>}
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
+function CompactTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="stat-tile is-compact">
+      <p className="muted">{label}</p>
+      <p className="stat-n">{value}</p>
     </div>
   )
 }
@@ -267,11 +234,11 @@ function Bar({
   max: number
   hint?: string
 }) {
-  const width = max === 0 ? 0 : Math.max(4, Math.round((value / max) * 100))
+  const width = max === 0 ? 0 : Math.max(6, Math.round((value / max) * 100))
   return (
     <div className="bar-row">
       <div className="bar-meta">
-        <span>{label}</span>
+        <span className="bar-label">{label}</span>
         <span className="bar-val">{hint ?? value}</span>
       </div>
       <div className="bar-track" aria-hidden="true">

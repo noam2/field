@@ -57,6 +57,22 @@ describe('parseInsightJson', () => {
     })
   })
 
+  it('accepts whatWorked and nextAction', () => {
+    const parsed = parseInsightJson({
+      ...VALID,
+      whatWorked: 'Asked about her trip',
+      nextAction: 'Text Maya about Friday coffee',
+    })
+    expect(parsed?.whatWorked).toBe('Asked about her trip')
+    expect(parsed?.nextAction).toBe('Text Maya about Friday coffee')
+  })
+
+  it('defaults missing whatWorked and nextAction to empty', () => {
+    const parsed = parseInsightJson(VALID)
+    expect(parsed?.whatWorked).toBe('')
+    expect(parsed?.nextAction).toBe('')
+  })
+
   it('rejects garbage, valence 4, and bad sentiment', () => {
     expect(parseInsightJson(null)).toBeNull()
     expect(parseInsightJson('nope')).toBeNull()
@@ -126,14 +142,14 @@ describe('understandTranscript', () => {
         response_format: { type: string }
         messages: { role: string; content: string }[]
       }
-      expect(body.model).toBe('gpt-4o-mini')
+      expect(body.model).toBe('gpt-4o')
       expect(body.response_format.type).toBe('json_schema')
       expect(body.messages[0]?.role).toBe('system')
       expect(body.messages[1]?.content).toContain('Nice talking')
       expect(body.messages[1]?.content).toContain('Cafe X')
       return new Response(
         JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4o',
           choices: [{ message: { content: JSON.stringify(VALID) } }],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -149,7 +165,7 @@ describe('understandTranscript', () => {
     })
     expect(insight.who).toBe('Maya')
     expect(insight.success).toBe(true)
-    expect(insight.model).toBe('gpt-4o-mini')
+    expect(insight.model).toBe('gpt-4o')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 

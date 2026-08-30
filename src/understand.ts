@@ -12,7 +12,8 @@ import type {
 import { DAYPARTS, PLACE_TYPES, SPOKEN_LANGUAGES } from './types'
 
 const COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions'
-export const UNDERSTAND_MODEL = 'gpt-4o-mini'
+export const UNDERSTAND_MODEL = 'gpt-4o'
+export const PROOF_MODEL = 'gpt-4o-mini'
 
 const SENTIMENTS: Sentiment[] = ['positive', 'mixed', 'negative', 'neutral']
 const ENERGIES: Energy[] = ['low', 'medium', 'high']
@@ -36,6 +37,8 @@ export const INSIGHT_JSON_SCHEMA = {
     energy: { type: 'string', enum: ENERGIES },
     summary: { type: 'string' },
     followUpSuggestion: { type: ['string', 'null'] },
+    whatWorked: { type: 'string' },
+    nextAction: { type: 'string' },
     exchangedContact: { type: 'boolean' },
     scheduled: { type: 'boolean' },
     rejection: { type: 'boolean' },
@@ -56,6 +59,8 @@ export const INSIGHT_JSON_SCHEMA = {
     'energy',
     'summary',
     'followUpSuggestion',
+    'whatWorked',
+    'nextAction',
     'exchangedContact',
     'scheduled',
     'rejection',
@@ -67,23 +72,22 @@ export const INSIGHT_JSON_SCHEMA = {
 
 const SYSTEM_PROMPT = [
   'You analyze a consented study-session conversation between enrolled participants.',
-  'The transcript may be Hebrew, English, or mixed (code-switching). Handle all three.',
-  'Extract structured fields only from the transcript. Do not invent facts.',
+  'The transcript may be Hebrew, English, or mixed (code-switching). Hebrew+English mixing is normal.',
+  'Extract structured fields only from the transcript. Do not invent facts, names, plans, or numbers.',
   'Extract names in Hebrew and English (e.g. Maya, Noa).',
-  'Contact signals include Instagram, WhatsApp, phone numbers, email, AND Hebrew: WhatsApp transliterations, phone-number words, Instagram transliterations.',
-  'Schedule signals include tomorrow, tonight, coffee, AND Hebrew: tomorrow, this evening, coffee, Saturday.',
-  'Rejection signals include not interested, I have a boyfriend, AND Hebrew: not interested, I have a boyfriend/friend, no thanks.',
-  'Treat Hebrew contact/schedule words as signals too: וואצאפ, נומר, אינסטגרם, קופי, מחר.',
-  'Treat Hebrew rejection phrases: לא מעוניין, יש לי חבר, לא תודה.',
-  'Write summary and followUpSuggestion in the same language as the majority of the transcript.',
-  'If the transcript is empty, sentiment is neutral, success is false, and summary says no speech was captured.',
+  'Contact signals include Instagram, WhatsApp, phone numbers, email, AND Hebrew: וואצאפ, נומר, אינסטגרם.',
+  'Schedule signals include tomorrow, tonight, coffee, AND Hebrew: מחר, היום בערב, קופי, שבת.',
+  'Rejection signals include not interested, I have a boyfriend, AND Hebrew: לא מעוניין, יש לי חבר, לא תודה.',
   'success is true only when contact was exchanged OR a meetup was scheduled, and the conversation is not a rejection.',
   'valence is a number from -1 (very negative) to 1 (very positive).',
-  'summary is 1-2 sentences written from the transcript.',
+  'summary is exactly 1 sentence, human, in the transcript language (he or en, or mixed if the transcript mixes).',
+  'whatWorked is one concrete thing that helped, taken from the transcript, or an empty string if nothing is clear. Not generic.',
+  'nextAction is one specific action in the same language as the transcript (e.g. "text Maya about Friday coffee"), or an empty string if none. Never write a generic "follow up".',
   'followUpSuggestion is a short next step or null if none.',
   'placeType is the venue category.',
   'daypart is morning, afternoon, evening, or night.',
   'language is he, en, or mixed based on the transcript.',
+  'If the transcript is empty, sentiment is neutral, success is false, whatWorked and nextAction are empty, and summary says no speech was captured.',
 ].join(' ')
 
 const PROOF_PROMPT = [
@@ -113,6 +117,8 @@ export function emptyInsight(model = UNDERSTAND_MODEL): Insight {
     energy: 'low',
     summary: 'No speech captured.',
     followUpSuggestion: null,
+    whatWorked: '',
+    nextAction: '',
     exchangedContact: false,
     scheduled: false,
     rejection: false,
@@ -151,6 +157,8 @@ export function parseInsightJson(raw: unknown): Insight | null {
   if (typeof v.energy !== 'string' || !ENERGIES.includes(v.energy as Energy)) return null
   if (typeof v.summary !== 'string') return null
   if (!(v.followUpSuggestion === null || typeof v.followUpSuggestion === 'string')) return null
+  if (v.whatWorked != null && typeof v.whatWorked !== 'string') return null
+  if (v.nextAction != null && typeof v.nextAction !== 'string') return null
   if (typeof v.exchangedContact !== 'boolean') return null
   if (typeof v.scheduled !== 'boolean') return null
   if (typeof v.rejection !== 'boolean') return null
@@ -180,6 +188,8 @@ export function parseInsightJson(raw: unknown): Insight | null {
     energy: v.energy as Energy,
     summary: v.summary,
     followUpSuggestion: v.followUpSuggestion,
+    whatWorked: typeof v.whatWorked === 'string' ? v.whatWorked : '',
+    nextAction: typeof v.nextAction === 'string' ? v.nextAction : '',
     exchangedContact: v.exchangedContact,
     scheduled: v.scheduled,
     rejection: v.rejection,
@@ -218,7 +228,7 @@ export async function proofTranscript(text: string): Promise<ProofResult> {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: UNDERSTAND_MODEL,
+      model: PROOF_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: PROOF_PROMPT },

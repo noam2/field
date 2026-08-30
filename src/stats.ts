@@ -367,7 +367,7 @@ export function peopleWithNumbers(approaches: Approach[]): PersonCard[] {
     list.sort((a, b) => (a.at < b.at ? 1 : -1))
     const last = list[0]
     const pending = list.find((a) => a.followUpAt && !a.followUpDone)
-    let nextStep = last.insight?.followUpSuggestion || 'Reach out when it feels right'
+    let nextStep = last.insight?.nextAction?.trim() || last.insight?.followUpSuggestion || 'Reach out when it feels right'
     if (pending?.followUpAt) nextStep = `Follow up ${formatShortDate(pending.followUpAt)}`
     else if (last.outcome !== 'number' && !last.insight?.exchangedContact) nextStep = OUTCOME_LABEL[last.outcome]
     cards.push({ who: last.who, lastAt: last.at, nextStep })

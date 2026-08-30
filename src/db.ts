@@ -81,6 +81,25 @@ class FieldDB extends Dexie {
             }
           })
       })
+    this.version(6)
+      .stores({
+        approaches: 'id, at, place, who, outcome, followUpAt, createdAt, sessionId, source',
+        sessions: 'id, startedAt',
+        audioClips: 'id, conversationId, createdAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('approaches')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            const insight = row.insight
+            if (insight && typeof insight === 'object') {
+              const ins = insight as Record<string, unknown>
+              if (ins.whatWorked === undefined) ins.whatWorked = ''
+              if (ins.nextAction === undefined) ins.nextAction = ''
+            }
+          })
+      })
   }
 }
 

@@ -358,6 +358,18 @@ describe('simulation suite', () => {
     expect(topics.food).toBe(3)
     expect(topics.music).toBe(3)
     expect(topics.nightlife).toBe(4)
+
+    const types = successByPlaceType(rows, 1)
+    const cafeType = types.find((t) => t.label === 'Cafe')
+    const barType = types.find((t) => t.label === 'Bar')
+    expect(cafeType?.count).toBe(8)
+    expect(barType?.count).toBe(8)
+    expect(cafeType!.rate).toBe(0.75)
+    expect(barType!.rate).toBe(0.25)
+
+    const parts = successByDaypart(rows)
+    expect(parts.length).toBeGreaterThanOrEqual(2)
+    expect(Math.max(...parts.map((d) => d.rate))).toBeGreaterThan(Math.min(...parts.map((d) => d.rate)))
   })
 })
 

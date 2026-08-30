@@ -3,6 +3,13 @@ import { Overlay } from '../components/Overlay'
 import { Segmented } from '../components/Segmented'
 import { db } from '../db'
 import { toast } from '../toast'
+import { DAYPART_LABEL, PLACE_TYPE_LABEL } from '../place'
+import {
+  approachDaypart,
+  approachPlaceType,
+  approachSentiment,
+  approachSuccess,
+} from '../stats'
 import type { Approach, Outcome } from '../types'
 import {
   FEEL_LABEL,
@@ -132,28 +139,23 @@ export function History({ approaches }: Props) {
               >
                 <span className="hist-who" dir="auto">{row.who.trim() || row.place || 'Conversation'}</span>
                 <span className="muted">{formatTime(row.at)}</span>
-                <span className="hist-place" dir="auto">
-                  {eventLabel(row)}
-                  <span className="dot">·</span>
-                  {formatDuration(row.dwellSeconds)}
-                  <span className="dot">·</span>
-                  {row.place}
-                  {row.analysisSource === 'pending' ? (
-                    <>
-                      <span className="dot">·</span>
-                      <span className="pending-label">Understanding…</span>
-                    </>
-                  ) : row.insight?.summary ? (
-                    <>
-                      <span className="dot">·</span>
-                      {snippet(row.insight.summary)}
-                    </>
-                  ) : row.transcript ? (
-                    <>
-                      <span className="dot">·</span>
-                      {snippet(row.transcript)}
-                    </>
-                  ) : null}
+                {row.who.trim() ? (
+                  <span className="hist-place" dir="auto">{row.place}</span>
+                ) : null}
+                <span className="hist-summary" dir="auto">
+                  {row.analysisSource === 'pending'
+                    ? 'Understanding…'
+                    : snippet(row.insight?.summary || row.analysis?.summary || row.transcript || eventLabel(row))}
+                </span>
+                <span className="hist-chips">
+                  <span className={`sent-chip sent-${approachSentiment(row)}`}>{approachSentiment(row)}</span>
+                  <span
+                    className={approachSuccess(row) ? 'pip pip-ok' : 'pip pip-no'}
+                    title={approachSuccess(row) ? 'success' : 'no success'}
+                    aria-label={approachSuccess(row) ? 'success' : 'no success'}
+                  />
+                  <span className="sent-chip">{DAYPART_LABEL[approachDaypart(row)]}</span>
+                  <span className="sent-chip">{PLACE_TYPE_LABEL[approachPlaceType(row)]}</span>
                 </span>
               </button>
             ))}
@@ -226,73 +228,39 @@ function Detail({
 
   return (
     <>
-      <dl className="detail-dl">
-        <dt>When</dt>
-        <dd>{formatTimeRange(row.at, row.endedAt, row.dwellSeconds)}</dd>
-        <dt>Duration</dt>
-        <dd>{formatDuration(row.dwellSeconds)}</dd>
-        <dt>Place</dt>
-        <dd>{row.place}</dd>
-        {row.lat != null && row.lng != null && (
-          <>
-            <dt>Coords</dt>
-            <dd>
-              {row.lat.toFixed(5)}, {row.lng.toFixed(5)}
-              {row.accuracy != null ? ` · ±${Math.round(row.accuracy)}m` : ''}
-            </dd>
-          </>
-        )}
-        <dt>Who</dt>
-        <dd>{row.who.trim() || '—'}</dd>
-        <dt>Outcome</dt>
-        <dd>{eventLabel(row)}</dd>
-        <dt>Feel</dt>
-        <dd>{row.feel ? FEEL_LABEL[row.feel] : '—'}</dd>
-      </dl>
-
       {row.analysisSource === 'pending' && <p className="pending-label">Understanding…</p>}
 
-      {row.insight && (
+      {row.insight?.summary ? (
+        <p className="insight-summary" dir="auto">{row.insight.summary}</p>
+      ) : row.analysis?.summary ? (
+        <p className="insight-summary" dir="auto">{row.analysis.summary}</p>
+      ) : null}
+
+      {row.insight?.whatWorked?.trim() ? (
         <>
-          <div className="chip-row">
-            <span className={`sent-chip sent-${row.insight.sentiment}`}>{row.insight.sentiment}</span>
-            <span className={row.insight.success ? 'sent-chip sent-positive' : 'sent-chip sent-negative'}>
-              {row.insight.success ? 'success' : 'no success'}
-            </span>
-            {row.analysisSource === 'rules' && <span className="sent-chip">rules fallback</span>}
-          </div>
-          <p dir="auto">{row.insight.summary}</p>
-          {row.insight.topics.length > 0 && (
-            <p className="muted">Topics: {row.insight.topics.join(', ')}</p>
-          )}
-          {row.insight.commitments.length > 0 && (
-            <>
-              <p className="section-title">Commitments</p>
-              <ul className="commit-list">
-                {row.insight.commitments.map((c) => (
-                  <li key={c} dir="auto">{c}</li>
-                ))}
-              </ul>
-            </>
-          )}
-          {row.insight.objections.length > 0 && (
-            <>
-              <p className="section-title">Objections</p>
-              <ul className="commit-list">
-                {row.insight.objections.map((c) => (
-                  <li key={c} dir="auto">{c}</li>
-                ))}
-              </ul>
-            </>
-          )}
-          {row.insight.followUpSuggestion && (
-            <>
-              <p className="section-title">Follow-up</p>
-              <p dir="auto">{row.insight.followUpSuggestion}</p>
-            </>
-          )}
+          <p className="section-title">What worked</p>
+          <p dir="auto">{row.insight.whatWorked}</p>
         </>
-      )}
+      ) : null}
+
+      {(row.insight?.nextAction?.trim() || row.insight?.followUpSuggestion) ? (
+        <>
+          <p className="section-title">Next</p>
+          <p className="card-next" dir="auto">
+            {row.insight?.nextAction?.trim() || row.insight?.followUpSuggestion}
+          </p>
+        </>
+      ) : null}
+
+      <div className="chip-row">
+        <span className={`sent-chip sent-${approachSentiment(row)}`}>{approachSentiment(row)}</span>
+        <span className={approachSuccess(row) ? 'sent-chip sent-positive' : 'sent-chip sent-negative'}>
+          {approachSuccess(row) ? 'success' : 'no success'}
+        </span>
+        <span className="sent-chip">{DAYPART_LABEL[approachDaypart(row)]}</span>
+        <span className="sent-chip">{PLACE_TYPE_LABEL[approachPlaceType(row)]}</span>
+        {row.analysisSource === 'rules' && <span className="sent-chip">rules fallback</span>}
+      </div>
 
       {row.audioId && (
         <>
@@ -306,29 +274,75 @@ function Detail({
           <p className="section-title">Transcript</p>
           <p className="transcript-full" dir="auto">{row.transcript}</p>
         </>
-      ) : null}
-
-      {!row.insight && row.analysis?.commitments && row.analysis.commitments.length > 0 && (
-        <>
-          <p className="section-title">Commitments</p>
-          <ul className="commit-list">
-            {row.analysis.commitments.map((c) => (
-              <li key={c}>{c}</li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {!row.insight && row.analysis?.topics && row.analysis.topics.length > 0 && (
-        <p className="muted">Topics: {row.analysis.topics.join(', ')}</p>
-      )}
-
-      {row.notes.trim() && !row.transcript.trim() && (
+      ) : row.notes.trim() ? (
         <>
           <p className="section-title">Notes</p>
           <p style={{ whiteSpace: 'pre-wrap' }} dir="auto">{row.notes}</p>
         </>
-      )}
+      ) : null}
+
+      <details className="detail-more">
+        <summary>Details</summary>
+        <dl className="detail-dl">
+          <dt>When</dt>
+          <dd>{formatTimeRange(row.at, row.endedAt, row.dwellSeconds)}</dd>
+          <dt>Duration</dt>
+          <dd>{formatDuration(row.dwellSeconds)}</dd>
+          <dt>Place</dt>
+          <dd>{row.place}</dd>
+          {row.lat != null && row.lng != null && (
+            <>
+              <dt>Coords</dt>
+              <dd>
+                {row.lat.toFixed(5)}, {row.lng.toFixed(5)}
+                {row.accuracy != null ? ` · ±${Math.round(row.accuracy)}m` : ''}
+              </dd>
+            </>
+          )}
+          <dt>Who</dt>
+          <dd>{row.who.trim() || '—'}</dd>
+          <dt>Outcome</dt>
+          <dd>{eventLabel(row)}</dd>
+          <dt>Feel</dt>
+          <dd>{row.feel ? FEEL_LABEL[row.feel] : '—'}</dd>
+        </dl>
+        {row.insight?.topics && row.insight.topics.length > 0 && (
+          <p className="muted">Topics: {row.insight.topics.join(', ')}</p>
+        )}
+        {row.insight?.commitments && row.insight.commitments.length > 0 && (
+          <>
+            <p className="section-title">Commitments</p>
+            <ul className="commit-list">
+              {row.insight.commitments.map((c) => (
+                <li key={c} dir="auto">{c}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {row.insight?.objections && row.insight.objections.length > 0 && (
+          <>
+            <p className="section-title">Objections</p>
+            <ul className="commit-list">
+              {row.insight.objections.map((c) => (
+                <li key={c} dir="auto">{c}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {!row.insight && row.analysis?.commitments && row.analysis.commitments.length > 0 && (
+          <>
+            <p className="section-title">Commitments</p>
+            <ul className="commit-list">
+              {row.analysis.commitments.map((c) => (
+                <li key={c}>{c}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {!row.insight && row.analysis?.topics && row.analysis.topics.length > 0 && (
+          <p className="muted">Topics: {row.analysis.topics.join(', ')}</p>
+        )}
+      </details>
 
       <div className="card-actions">
         <button type="button" className="btn-secondary" onClick={onEdit}>

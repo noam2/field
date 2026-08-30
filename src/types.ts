@@ -67,6 +67,8 @@ export type Insight = {
   energy: Energy
   summary: string
   followUpSuggestion: string | null
+  whatWorked: string
+  nextAction: string
   exchangedContact: boolean
   scheduled: boolean
   rejection: boolean
