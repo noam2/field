@@ -29,9 +29,9 @@ describe('App', () => {
     expect(screen.getByText(/nothing logged yet/i)).toBeInTheDocument()
   })
 
-  it('Start session is on the Log tab', () => {
+  it('Start recording is on the Log tab', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /start session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start recording/i })).toBeInTheDocument()
   })
 
   it('History shows a recorded conversation snippet', async () => {

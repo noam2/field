@@ -31,7 +31,7 @@ beforeEach(async () => {
 })
 
 describe('Log', () => {
-  it('shows Start session and does not record until clicked', async () => {
+  it('shows Start recording and does not record until clicked', async () => {
     const getUserMedia = vi.fn(async () => fakeStream())
     setSessionTestDeps({
       getUserMedia,
@@ -40,8 +40,10 @@ describe('Log', () => {
       geolocation: null,
     })
     render(<Log approaches={[]} />)
-    expect(screen.getByRole('button', { name: /start session/i })).toBeInTheDocument()
-    expect(screen.getByText(/enrolled study participant/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start recording/i })).toBeInTheDocument()
+    expect(screen.getByText(/tap to record\. enrolled study session/i)).toBeInTheDocument()
+    expect(screen.queryByText(/start session/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/stop session/i)).not.toBeInTheDocument()
     expect(getUserMedia).not.toHaveBeenCalled()
   })
 
@@ -56,7 +58,7 @@ describe('Log', () => {
     await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
   })
 
-  it('starts recording after Start session', async () => {
+  it('starts recording after tap and the same button becomes Stop recording', async () => {
     const getUserMedia = vi.fn(async () => fakeStream())
     setSessionTestDeps({
       getUserMedia,
@@ -66,9 +68,11 @@ describe('Log', () => {
     })
     const user = userEvent.setup()
     render(<Log approaches={[]} />)
-    await user.click(screen.getByRole('button', { name: /start session/i }))
+    await user.click(screen.getByRole('button', { name: /start recording/i }))
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText(/session live/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /stop session/i })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+    expect(screen.queryByText(/start session/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/stop session/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/session live/i)).not.toBeInTheDocument()
   })
 })

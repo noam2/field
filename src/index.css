@@ -123,6 +123,8 @@ p {
 
 .app-main {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   padding: 12px 18px 28px;
 }
 
@@ -167,6 +169,11 @@ p {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.screen.log {
+  flex: 1;
+  gap: 16px;
 }
 
 .screen-head h1,
@@ -676,6 +683,112 @@ textarea:focus {
   }
 }
 
+
+
+.rec-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 220px;
+  padding: 8px 0 16px;
+}
+
+.rec-btn {
+  width: 168px;
+  height: 168px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--accent);
+  color: #16120a;
+  font-weight: 650;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 36px rgba(212, 168, 83, 0.32);
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.rec-btn:hover:not(:disabled),
+.rec-btn:focus-visible:not(:disabled) {
+  background: var(--accent-press);
+}
+
+.rec-btn.is-live {
+  background: #c44545;
+  color: #fff;
+  box-shadow: 0 10px 36px rgba(196, 69, 69, 0.4);
+  animation: recpulse 1.8s ease-in-out infinite;
+}
+
+.rec-btn.is-live:hover:not(:disabled),
+.rec-btn.is-live:focus-visible:not(:disabled) {
+  background: #b33c3c;
+}
+
+.rec-btn-label {
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.rec-btn-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 550;
+  opacity: 0.92;
+}
+
+.rec-btn.is-live .rec-dot {
+  width: 14px;
+  height: 14px;
+  margin-bottom: 2px;
+}
+
+.rec-caption {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 240px;
+  line-height: 1.35;
+}
+
+.rec-live {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rec-live-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.rec-live-meta .muted {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 6px;
+}
+
+.transcript-live.is-compact {
+  min-height: 64px;
+  max-height: 120px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
 
 .consent {
   padding: 14px;
