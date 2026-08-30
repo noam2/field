@@ -3,7 +3,9 @@ import { db } from './db'
 import { setApiKey } from './openai'
 import { setToastListener } from './toast'
 import {
+  GUM_TIMEOUT_MS,
   IDLE_STOP_MS,
+  MIC_BLOCKED_ERROR,
   SessionRuntime,
   pickRecorderMime,
   resetSessionRuntime,
@@ -20,6 +22,12 @@ beforeEach(async () => {
   localStorage.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
+  Object.defineProperty(navigator, 'permissions', {
+    configurable: true,
+    writable: true,
+    value: undefined,
+  })
   await db.approaches.clear()
   await db.sessions.clear()
   await db.audioClips.clear()
@@ -99,8 +107,53 @@ class FakeRecorder {
   }
 }
 
-function fakeStream(): MediaStream {
-  return { getTracks: () => [{ stop() {} }] } as unknown as MediaStream
+function fakeStream(stop: () => void = () => {}): MediaStream {
+  return { getTracks: () => [{ stop }] } as unknown as MediaStream
+}
+
+function stubMicPermission(state: PermissionState | 'throw' | null) {
+  if (state === null) {
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: undefined,
+    })
+    return vi.fn()
+  }
+  const query = vi.fn(async () => {
+    if (state === 'throw') throw new Error('unsupported')
+    return { state: state as PermissionState }
+  })
+  Object.defineProperty(navigator, 'permissions', {
+    configurable: true,
+    value: { query },
+  })
+  return query
+}
+
+function pendingGum() {
+  let resolveGum!: (stream: MediaStream) => void
+  let rejectGum!: (err: unknown) => void
+  const promise = new Promise<MediaStream>((resolve, reject) => {
+    resolveGum = resolve
+    rejectGum = reject
+  })
+  return {
+    getUserMedia: vi.fn(() => promise),
+    resolve: (stream = fakeStream()) => resolveGum(stream),
+    reject: (err: unknown) => rejectGum(err),
+  }
+}
+
+function recCtor() {
+  return vi.fn(function Rec() {
+    return new FakeRecorder()
+  }) as unknown as new (s: MediaStream) => FakeRecorder
+}
+
+async function flush() {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
 }
 
 describe('SessionRuntime', () => {
@@ -247,6 +300,8 @@ describe('SessionRuntime', () => {
     const started = rt.start()
     expect(rt.getSnapshot().phase).toBe('starting')
     expect(rt.getSnapshot().live).toBe(false)
+    await flush()
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
     resolveGum(fakeStream())
     await started
     expect(rt.getSnapshot().phase).toBe('live')
@@ -268,7 +323,146 @@ describe('SessionRuntime', () => {
     await rt.start()
     expect(rt.getSnapshot().phase).toBe('idle')
     expect(rt.getSnapshot().live).toBe(false)
-    expect(rt.getSnapshot().error).toMatch(/permission/i)
+    expect(rt.getSnapshot().error).toBe(MIC_BLOCKED_ERROR)
+  })
+
+  it('GUM_TIMEOUT_MS is 8000', () => {
+    expect(GUM_TIMEOUT_MS).toBe(8_000)
+  })
+
+  it('start while starting is a no-op', async () => {
+    const gum = pendingGum()
+    const rt = new SessionRuntime({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const first = rt.start()
+    expect(rt.getSnapshot().phase).toBe('starting')
+    await flush()
+    await rt.start()
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    expect(rt.getSnapshot().phase).toBe('starting')
+    gum.resolve()
+    await first
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+  })
+
+  it('gum that never resolves goes idle after GUM_TIMEOUT_MS; late resolve is ignored', async () => {
+    vi.useFakeTimers()
+    const stop = vi.fn()
+    const stream = fakeStream(stop)
+    const gum = pendingGum()
+    const rt = new SessionRuntime({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const started = rt.start()
+    expect(rt.getSnapshot().phase).toBe('starting')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(GUM_TIMEOUT_MS - 1)
+    expect(rt.getSnapshot().phase).toBe('starting')
+    await vi.advanceTimersByTimeAsync(1)
+    await started
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(rt.getSnapshot().error).toBe(MIC_BLOCKED_ERROR)
+    gum.resolve(stream)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(stop).toHaveBeenCalled()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it('permissions.query denied fails even if gum is already in flight', async () => {
+    const query = stubMicPermission('denied')
+    const gum = pendingGum()
+    const rt = new SessionRuntime({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const started = rt.start()
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    await started
+    expect(query).toHaveBeenCalled()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(rt.getSnapshot().error).toBe(MIC_BLOCKED_ERROR)
+  })
+
+  it('permissions.query throw is skipped and gum still runs', async () => {
+    stubMicPermission('throw')
+    const getUserMedia = vi.fn(async () => fakeStream())
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+  })
+
+  it('stop during starting returns idle and ignores late gum', async () => {
+    const stop = vi.fn()
+    const stream = fakeStream(stop)
+    const gum = pendingGum()
+    const rt = new SessionRuntime({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const started = rt.start()
+    expect(rt.getSnapshot().phase).toBe('starting')
+    await flush()
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    await rt.stop()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(rt.getSnapshot().error).toBe(null)
+    gum.resolve(stream)
+    await started
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(stop).toHaveBeenCalled()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+  })
+
+  it('retry after timeout starts from idle', async () => {
+    vi.useFakeTimers()
+    const gum = pendingGum()
+    const getUserMedia = vi.fn(() => gum.getUserMedia())
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: recCtor() as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const started = rt.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(GUM_TIMEOUT_MS)
+    await started
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().error).toBe(MIC_BLOCKED_ERROR)
+    vi.useRealTimers()
+    getUserMedia.mockImplementation(async () => fakeStream())
+    await rt.start()
+    expect(rt.getSnapshot().phase).toBe('live')
+    expect(rt.getSnapshot().error).toBe(null)
+    await rt.stop()
   })
 
   function runtime(now: () => number) {

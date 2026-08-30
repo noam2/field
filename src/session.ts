@@ -12,6 +12,9 @@ import type { Approach, SpokenLanguage, UnderstandContext } from './types'
 export const SILENCE_MS = 60_000
 export const IDLE_STOP_MS = 10 * 60 * 1000
 export const PING_THROTTLE_MS = 10_000
+export const GUM_TIMEOUT_MS = 8_000
+/** One-line idle error when the site mic permission is blocked or getUserMedia hangs. */
+export const MIC_BLOCKED_ERROR = 'Mic is blocked in Chrome site settings.'
 export const RECORDER_MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
   'audio/webm',
@@ -318,6 +321,7 @@ export class SessionRuntime {
   private hiddenWhileLive = false
   private pageshowBound = false
   private energyTimer: ReturnType<typeof setInterval> | null = null
+  private gumTimer: ReturnType<typeof setTimeout> | null = null
   private analyser: AnalyserNode | null = null
   private audioCtx: AudioContext | null = null
   private energySource: MediaStreamAudioSourceNode | null = null
@@ -368,14 +372,50 @@ export class SessionRuntime {
       this.emit({ phase: 'idle', live: false, error: 'Microphone is not available on this device.' })
       return
     }
+
+    // Call getUserMedia immediately — never wait on Permissions.query first.
+    // Chrome still owns the OS grant; we cannot skip it. If already granted,
+    // this resolves with no prompt. Denied/hang is handled in parallel.
+    const gumPromise = gum({ audio: true, video: false })
+    void gumPromise.then(
+      (stream) => {
+        if (gen !== this.startGen) this.haltStream(stream)
+      },
+      () => {
+        /* reject handled by the race below */
+      },
+    )
+
     try {
-      this.stream = await gum({ audio: true, video: false })
+      this.stream = await new Promise<MediaStream>((resolve, reject) => {
+        this.clearGumTimer()
+        this.gumTimer = setTimeout(() => {
+          this.gumTimer = null
+          reject(Object.assign(new Error('getUserMedia timed out'), { name: 'GumTimeoutError' }))
+        }, GUM_TIMEOUT_MS)
+        gumPromise.then(
+          (stream) => {
+            this.clearGumTimer()
+            resolve(stream)
+          },
+          (err) => {
+            this.clearGumTimer()
+            reject(err)
+          },
+        )
+        void this.microphoneDenied().then((denied) => {
+          if (!denied || gen !== this.startGen) return
+          this.clearGumTimer()
+          reject(Object.assign(new Error('mic denied'), { name: 'NotAllowedError' }))
+        })
+      })
     } catch {
       if (gen !== this.startGen) return
+      this.startGen += 1
       this.emit({
         phase: 'idle',
         live: false,
-        error: 'Microphone permission denied. Enable the mic and retry.',
+        error: MIC_BLOCKED_ERROR,
       })
       return
     }
@@ -447,6 +487,7 @@ export class SessionRuntime {
   async stop(): Promise<void> {
     if (this.snapshot.phase === 'starting' && !this.snapshot.live && !this.snapshot.sessionId) {
       this.startGen += 1
+      this.clearGumTimer()
       this.stopStream()
       this.emit({ phase: 'idle', live: false, recording: false, error: null })
       return
@@ -547,6 +588,7 @@ export class SessionRuntime {
 
   dispose(): void {
     this.startGen += 1
+    this.clearGumTimer()
     this.wantRecognition = false
     this.clearSilenceTimer()
     this.clearIdleWatch()
@@ -898,14 +940,38 @@ export class SessionRuntime {
     this.watchId = null
   }
 
-  private stopStream(): void {
-    this.stream?.getTracks().forEach((t) => {
+  private async microphoneDenied(): Promise<boolean> {
+    try {
+      const query = navigator.permissions?.query
+      if (typeof query !== 'function') return false
+      const status = await query.call(navigator.permissions, {
+        name: 'microphone' as PermissionName,
+      })
+      return status.state === 'denied'
+    } catch {
+      return false
+    }
+  }
+
+  private clearGumTimer(): void {
+    if (this.gumTimer != null) {
+      clearTimeout(this.gumTimer)
+      this.gumTimer = null
+    }
+  }
+
+  private haltStream(stream: MediaStream): void {
+    stream.getTracks().forEach((t) => {
       try {
         t.stop()
       } catch {
         /* ignore */
       }
     })
+  }
+
+  private stopStream(): void {
+    if (this.stream) this.haltStream(this.stream)
     this.stream = null
   }
 

@@ -90,7 +90,7 @@ describe('Log', () => {
     expect(screen.getByText(/tap to stop/i)).toBeInTheDocument()
   })
 
-  it('shows Starting or REC ON before getUserMedia resolves', async () => {
+  it('shows Starting… before getUserMedia resolves without REC ON or permission copy', async () => {
     const gum = deferredGum()
     setSessionTestDeps({
       getUserMedia: gum.getUserMedia,
@@ -101,18 +101,72 @@ describe('Log', () => {
     const user = userEvent.setup()
     const { container } = render(<Log approaches={[]} />)
     await user.click(screen.getByRole('button', { name: /start recording/i }))
-    await waitFor(() => {
-      expect(screen.getByText(/starting/i).textContent || screen.getByText(/rec on/i)).toBeTruthy()
-    })
-    expect(screen.getByText(/rec on/i)).toBeInTheDocument()
-    expect(screen.getByText(/starting/i)).toBeInTheDocument()
+    const startingBtn = await screen.findByRole('button', { name: /cancel starting/i })
+    expect(startingBtn).toBeEnabled()
+    expect(startingBtn).toHaveTextContent(/starting/i)
+    expect(screen.getByText('STARTING')).toBeInTheDocument()
+    expect(screen.getByText(/tap to cancel/i)).toBeInTheDocument()
+    expect(screen.queryByText(/rec on/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/allow microphone/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/listening/i)).not.toBeInTheDocument()
     expect(container.querySelector('.log.is-recording')).toBeTruthy()
     expect(container.querySelector('.rec-btn.is-live')).toBeTruthy()
     expect(screen.queryByText(/^record$/i)).not.toBeInTheDocument()
     gum.resolve()
     expect(await screen.findByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+    expect(screen.getByText(/rec on/i)).toBeInTheDocument()
     expect(screen.getByText(/listening/i)).toBeInTheDocument()
     expect(screen.getByText(/mic on/i)).toBeInTheDocument()
+    expect(screen.getByText(/tap to stop/i)).toBeInTheDocument()
+  })
+
+  it('Starting… button is not disabled and click calls stop', async () => {
+    const gum = deferredGum()
+    setSessionTestDeps({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: FakeRecorder as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const user = userEvent.setup()
+    render(<Log approaches={[]} />)
+    await user.click(screen.getByRole('button', { name: /start recording/i }))
+    const startingBtn = await screen.findByRole('button', { name: /cancel starting/i })
+    expect(startingBtn).toBeEnabled()
+    expect(screen.queryByText(/rec on/i)).not.toBeInTheDocument()
+    await user.click(startingBtn)
+    const startBtn = await screen.findByRole('button', { name: /start recording/i })
+    expect(startBtn).toBeEnabled()
+    expect(startBtn).toHaveTextContent(/^record$/i)
+    expect(screen.getByText(/tap to record/i)).toBeInTheDocument()
+    expect(screen.queryByText(/starting/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/rec on/i)).not.toBeInTheDocument()
+    expect(getSessionRuntime().getSnapshot().phase).toBe('idle')
+    gum.resolve()
+    await waitFor(() => expect(getSessionRuntime().getSnapshot().phase).toBe('idle'))
+    expect(getSessionRuntime().getSnapshot().live).toBe(false)
+  })
+
+  it('Retry on the error banner starts again from idle', async () => {
+    const getUserMedia = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('denied'))
+      .mockResolvedValueOnce(fakeStream())
+    setSessionTestDeps({
+      getUserMedia,
+      MediaRecorder: FakeRecorder as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const user = userEvent.setup()
+    render(<Log approaches={[]} />)
+    await user.click(screen.getByRole('button', { name: /start recording/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/blocked/i)
+    expect(screen.getByRole('button', { name: /start recording/i })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: /^retry$/i }))
+    expect(await screen.findByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+    expect(screen.getByText(/rec on/i)).toBeInTheDocument()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 
   it('stop returns to idle Record, not stuck starting or disabled', async () => {

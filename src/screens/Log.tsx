@@ -53,14 +53,14 @@ export function Log({ approaches }: Props) {
     snap.phase === 'live'
       ? 'Stop recording'
       : snap.phase === 'starting'
-        ? 'Starting recording'
+        ? 'Cancel starting'
         : 'Start recording'
 
   const caption =
     snap.phase === 'live'
       ? 'Tap to stop'
       : snap.phase === 'starting'
-        ? 'Allow microphone access'
+        ? 'Tap to cancel'
         : 'Tap to record.'
 
   return (
@@ -86,8 +86,14 @@ export function Log({ approaches }: Props) {
         <div className="rec-banner" role="status">
           <span className="rec-dot" aria-hidden="true" />
           <div className="rec-copy">
-            <span className="rec-title">REC ON</span>
-            <span className="rec-banner-time">{elapsed}</span>
+            {snap.phase === 'live' ? (
+              <>
+                <span className="rec-title">REC ON</span>
+                <span className="rec-banner-time">{elapsed}</span>
+              </>
+            ) : (
+              <span className="rec-title">STARTING</span>
+            )}
           </div>
         </div>
       )}
@@ -96,7 +102,6 @@ export function Log({ approaches }: Props) {
         <button
           type="button"
           className={recClass}
-          disabled={snap.phase === 'starting'}
           aria-pressed={recordingUi}
           aria-label={recAria}
           onClick={() => void toggle()}
