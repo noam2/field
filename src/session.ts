@@ -122,8 +122,14 @@ function audioContextCtor(): AudioCtxCtor | null {
 let keepOsc: { ctx: AudioContext; osc: OscillatorNode } | null = null
 let keepAudio: HTMLAudioElement | null = null
 
-export function startKeepAlive(): void {
-  stopKeepAlive()
+/** Oscillator is extra keep-alive; Android Chrome needs the looping <audio> too. */
+export function shouldStartKeepAliveAudio(): boolean {
+  return true
+}
+
+export let keepAliveAudioAttempted = false
+
+export function startKeepAliveOscillator(): void {
   try {
     const AC = audioContextCtor()
     if (AC) {
@@ -141,17 +147,47 @@ export function startKeepAlive(): void {
   } catch {
     keepOsc = null
   }
-  if (keepOsc) return
+}
+
+export function startKeepAliveElement(): void {
+  keepAliveAudioAttempted = true
+  if (!shouldStartKeepAliveAudio()) return
   if (import.meta.env.MODE === 'test') return
   try {
     const el = new Audio(SILENT_WAV)
     el.loop = true
-    el.volume = 0
+    el.setAttribute('playsinline', 'true')
+    ;(el as HTMLAudioElement & { playsInline: boolean }).playsInline = true
+    // Android may ignore muted / volume 0; keep a tiny volume plus playsInline.
+    el.volume = 0.01
     const play = el.play()
     if (play && typeof play.catch === 'function') void play.catch(() => {})
     keepAudio = el
   } catch {
     keepAudio = null
+  }
+}
+
+export const keepAliveStarters = {
+  oscillator: startKeepAliveOscillator,
+  element: startKeepAliveElement,
+}
+
+export function startKeepAlive(): void {
+  stopKeepAlive()
+  keepAliveAudioAttempted = false
+  keepAliveStarters.oscillator()
+  // Never return early: oscillator must not skip the HTMLAudio path.
+  keepAliveStarters.element()
+}
+
+function applyMediaSession(state: 'playing' | 'none'): void {
+  try {
+    const ms = navigator.mediaSession
+    if (!ms) return
+    ms.playbackState = state
+  } catch {
+    /* optional */
   }
 }
 
@@ -322,6 +358,8 @@ export class SessionRuntime {
   private geoClass: string | null = null
   private hiddenWhileLive = false
   private pageshowBound = false
+  private deadMicTimer: ReturnType<typeof setTimeout> | null = null
+  private captureResumeInFlight = false
   private energyTimer: ReturnType<typeof setInterval> | null = null
   private gumTimer: ReturnType<typeof setTimeout> | null = null
   private analyser: AnalyserNode | null = null
@@ -472,6 +510,7 @@ export class SessionRuntime {
       resumeNote: null,
     })
 
+    this.bindTrackEnded(this.stream)
     this.beginConversation()
     this.startRecognition()
     this.beginWatch()
@@ -479,6 +518,7 @@ export class SessionRuntime {
     this.bindVisibility()
     this.startEnergyMonitor()
     this.startIdleWatch()
+    applyMediaSession('playing')
     if (getKeepAlive()) startKeepAlive()
   }
 
@@ -498,12 +538,14 @@ export class SessionRuntime {
     this.wantRecognition = false
     this.clearSilenceTimer()
     this.clearIdleWatch()
+    this.clearDeadMicTimer()
     this.stopRecognition()
     this.clearWatch()
     await this.closeConversation()
     this.stopStream()
     this.stopEnergyMonitor()
     stopKeepAlive()
+    applyMediaSession('none')
     void this.releaseWakeLock()
     this.unbindVisibility()
     const sessionId = this.snapshot.sessionId
@@ -577,6 +619,13 @@ export class SessionRuntime {
 
   async checkIdleStop(at = this.now()): Promise<boolean> {
     if (!this.snapshot.live || this.idleStopping) return false
+    // Hidden time must not count as silence: JS is frozen, lastActivityAt goes stale.
+    if (this.hiddenWhileLive) return false
+    try {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false
+    } catch {
+      /* jsdom / missing document */
+    }
     const idleMs = getIdleStopMs()
     if (!shouldIdleStop(this.lastActivityAt, this.snapshot.startedAtMs, at, idleMs)) return false
     this.idleStopping = true
@@ -596,6 +645,7 @@ export class SessionRuntime {
     this.wantRecognition = false
     this.clearSilenceTimer()
     this.clearIdleWatch()
+    this.clearDeadMicTimer()
     this.stopRecognition()
     this.clearWatch()
     try {
@@ -607,6 +657,7 @@ export class SessionRuntime {
     this.stopStream()
     this.stopEnergyMonitor()
     stopKeepAlive()
+    applyMediaSession('none')
     void this.releaseWakeLock()
     this.unbindVisibility()
     this.listeners.clear()
@@ -659,7 +710,7 @@ export class SessionRuntime {
       this.recorder.start(1000)
       this.emit({ recording: true })
     } catch {
-      this.emit({ error: 'Could not start the audio recorder.' })
+      this.emit({ recording: false, error: 'Could not start the audio recorder.' })
     }
   }
 
@@ -975,8 +1026,9 @@ export class SessionRuntime {
   }
 
   private stopStream(): void {
-    if (this.stream) this.haltStream(this.stream)
+    const s = this.stream
     this.stream = null
+    if (s) this.haltStream(s)
   }
 
   private markActivity(at = this.now()): void {
@@ -1026,18 +1078,107 @@ export class SessionRuntime {
     if (this.snapshot.live) this.handleResume()
   }
 
+  private streamDead(): boolean {
+    if (!this.stream) return true
+    const tracks = this.stream.getTracks()
+    if (tracks.length === 0) return true
+    return tracks.every((t) => t.readyState === 'ended')
+  }
+
+  private gumFn(): SessionDeps['getUserMedia'] {
+    return (
+      this.deps.getUserMedia ??
+      navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices)
+    )
+  }
+
+  private bindTrackEnded(stream: MediaStream | null): void {
+    if (!stream) return
+    for (const track of stream.getTracks()) {
+      track.onended = () => {
+        if (this.stream !== stream) return
+        this.scheduleDeadMicResume()
+      }
+    }
+  }
+
+  private scheduleDeadMicResume(): void {
+    if (!this.snapshot.live) return
+    if (this.deadMicTimer != null) return
+    this.deadMicTimer = setTimeout(() => {
+      this.deadMicTimer = null
+      if (this.snapshot.live) void this.ensureCapture()
+    }, 400)
+  }
+
+  private clearDeadMicTimer(): void {
+    if (this.deadMicTimer != null) {
+      clearTimeout(this.deadMicTimer)
+      this.deadMicTimer = null
+    }
+  }
+
+  private restartCapture(): void {
+    if (!this.snapshot.live) return
+    if (this.convId) this.startRecorder()
+    else this.beginConversation()
+  }
+
+  private async ensureCapture(): Promise<void> {
+    if (!this.snapshot.live || this.captureResumeInFlight) return
+    this.captureResumeInFlight = true
+    try {
+      if (this.streamDead()) {
+        const gum = this.gumFn()
+        if (!gum) {
+          this.emit({
+            recording: false,
+            error: 'Microphone is not available on this device.',
+          })
+          return
+        }
+        try {
+          const stream = await gum({ audio: true, video: false })
+          if (!this.snapshot.live) {
+            this.haltStream(stream)
+            return
+          }
+          this.stopStream()
+          this.stream = stream
+          this.bindTrackEnded(stream)
+          this.startEnergyMonitor()
+          this.restartCapture()
+        } catch {
+          this.emit({
+            recording: false,
+            error: 'Microphone was lost. Recording could not restart.',
+          })
+        }
+        return
+      }
+      if (!this.recorder || this.recorder.state !== 'recording') {
+        this.restartCapture()
+      }
+    } finally {
+      this.captureResumeInFlight = false
+    }
+  }
+
   private handleResume(): void {
     if (!this.snapshot.live) return
+    // Reset idle clock before any checkIdleStop from thawed timers.
+    this.lastActivityAt = this.now()
+    const wasHidden = this.hiddenWhileLive
+    const wasRecording = this.recorder?.state === 'recording'
+    this.hiddenWhileLive = false
     void this.acquireWakeLock()
-    if (getKeepAlive()) {
-      startKeepAlive()
-      this.restartRecognition()
-    }
-    if (this.hiddenWhileLive) {
-      this.hiddenWhileLive = false
-      const recording = this.recorder?.state === 'recording' || this.snapshot.recording
+    if (getKeepAlive()) startKeepAlive()
+    applyMediaSession('playing')
+    void this.ensureCapture()
+    this.restartRecognition()
+    if (wasHidden) {
       this.emit({
-        resumeNote: recording
+        resumeNote: wasRecording
           ? 'Recording continued while you were away.'
           : 'Recording was interrupted. Audio may have stopped — keep Field on screen.',
       })

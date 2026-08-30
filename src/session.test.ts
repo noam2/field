@@ -7,9 +7,12 @@ import {
   IDLE_STOP_MS,
   MIC_BLOCKED_ERROR,
   SessionRuntime,
+  keepAliveAudioAttempted,
+  keepAliveStarters,
   pickRecorderMime,
   resetSessionRuntime,
   shouldIdleStop,
+  shouldStartKeepAliveAudio,
   shouldSplitConversation,
   SILENCE_MS,
   startKeepAlive,
@@ -18,12 +21,24 @@ import {
 import * as understand from './understand'
 import { setIdleStopMs, setPauseMs } from './timing'
 
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => state,
+  })
+  Object.defineProperty(document, 'hidden', {
+    configurable: true,
+    get: () => state === 'hidden',
+  })
+}
+
 beforeEach(async () => {
   resetSessionRuntime()
   localStorage.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
+  setVisibility('visible')
   Object.defineProperty(navigator, 'permissions', {
     configurable: true,
     writable: true,
@@ -93,6 +108,65 @@ describe('keepAlive', () => {
       startKeepAlive()
       stopKeepAlive()
     }).not.toThrow()
+  })
+
+  it('attempts audio element even if oscillator started', () => {
+    class FakeOsc {
+      frequency = { value: 0 }
+      connect() {
+        return this
+      }
+      start() {}
+      stop() {}
+    }
+    class FakeGain {
+      gain = { value: 0 }
+      connect() {
+        return this
+      }
+    }
+    class FakeAC {
+      destination = {}
+      createOscillator() {
+        return new FakeOsc()
+      }
+      createGain() {
+        return new FakeGain()
+      }
+      resume() {
+        return Promise.resolve()
+      }
+      close() {
+        return Promise.resolve()
+      }
+    }
+    vi.stubGlobal('AudioContext', FakeAC)
+
+    const AudioSpy = vi.fn(function FakeAudio() {
+      return {
+        loop: false,
+        volume: 1,
+        playsInline: false,
+        setAttribute() {},
+        play: () => Promise.resolve(),
+        pause() {},
+        removeAttribute() {},
+        load() {},
+      }
+    })
+    vi.stubGlobal('Audio', AudioSpy)
+
+    const osc = vi.spyOn(keepAliveStarters, 'oscillator')
+    const el = vi.spyOn(keepAliveStarters, 'element')
+
+    startKeepAlive()
+    expect(osc).toHaveBeenCalled()
+    expect(el).toHaveBeenCalled()
+    expect(keepAliveAudioAttempted).toBe(true)
+    expect(shouldStartKeepAliveAudio()).toBe(true)
+    // MODE==='test' skips `new Audio()` so AudioSpy may not run; that's ok.
+    void AudioSpy
+    stopKeepAlive()
   })
 })
 
@@ -576,5 +650,71 @@ describe('SessionRuntime', () => {
     expect(rt.getSnapshot().phase).toBe('idle')
     expect(toasts).toContain('Stopped — no speech for 5 minutes.')
     setToastListener(null)
+  })
+
+  it('checkIdleStop is false when document is hidden even after 10 min', async () => {
+    let now = 1_000
+    const rt = runtime(() => now)
+    await rt.start()
+    setVisibility('hidden')
+    now = 1_000 + IDLE_STOP_MS
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().live).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+  })
+
+  it('stays live after hidden then visible despite 10+ min wall clock', async () => {
+    let now = 1_000
+    const rt = runtime(() => now)
+    await rt.start()
+    expect(rt.getSnapshot().live).toBe(true)
+
+    setVisibility('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    now = 1_000 + IDLE_STOP_MS + 60_000
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().live).toBe(true)
+
+    setVisibility('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().live).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+  })
+
+  it('handleResume restarts recorder when state is inactive', async () => {
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    })
+    const getUserMedia = vi.fn(async () => fakeStream())
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(Rec).toHaveBeenCalledTimes(1)
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    rec.state = 'inactive'
+
+    setVisibility('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    rec.state = 'inactive'
+
+    setVisibility('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+
+    expect(Rec.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const rec2 = Rec.mock.results[Rec.mock.results.length - 1].value as FakeRecorder
+    expect(rec2.state).toBe('recording')
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(rt.getSnapshot().live).toBe(true)
+    await rt.stop()
   })
 })

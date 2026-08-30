@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { db, getLastPlace, setLastPlace } from '../db'
@@ -18,20 +18,20 @@ describe('Settings recording timing', () => {
     ).toBeInTheDocument()
   })
 
-  it('changing pause segment updates the stored pref', async () => {
+  it('changing pause select updates the stored pref', async () => {
     const user = userEvent.setup()
     render(<Settings onClose={() => {}} />)
-    const group = screen.getByRole('radiogroup', { name: 'New conversation after pause' })
-    await user.click(within(group).getByRole('radio', { name: '30s' }))
+    const select = screen.getByRole('combobox', { name: 'New conversation after pause' })
+    await user.selectOptions(select, '30000')
     expect(getPauseMs()).toBe(30_000)
     expect(localStorage.getItem(PAUSE_MS_STORAGE)).toBe('30000')
   })
 
-  it('changing idle-stop segment to Off stores 0', async () => {
+  it('changing idle-stop select to Off stores 0', async () => {
     const user = userEvent.setup()
     render(<Settings onClose={() => {}} />)
-    const group = screen.getByRole('radiogroup', { name: 'Stop recording after silence' })
-    await user.click(within(group).getByRole('radio', { name: 'Off' }))
+    const select = screen.getByRole('combobox', { name: 'Stop recording after silence' })
+    await user.selectOptions(select, '0')
     expect(getIdleStopMs()).toBe(0)
     expect(localStorage.getItem(IDLE_STOP_MS_STORAGE)).toBe('0')
   })

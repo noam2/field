@@ -144,34 +144,44 @@ export function Settings({ onClose }: Props) {
           </p>
 
           <p className="section-title">Recording</p>
-          <Segmented
-            name="pause-ms"
-            legend="New conversation after pause"
-            value={String(pauseMs)}
-            onChange={(v) => {
-              const n = Number(v)
-              setPauseMs(n)
-              setPauseMsUi(getPauseMs())
-            }}
-            options={PAUSE_MS_OPTIONS.map((ms) => ({
-              value: String(ms),
-              label: PAUSE_MS_LABEL[ms],
-            }))}
-          />
-          <Segmented
-            name="idle-stop-ms"
-            legend="Stop recording after silence"
-            value={String(idleStopMs)}
-            onChange={(v) => {
-              const n = Number(v)
-              setIdleStopMs(n)
-              setIdleStopMsUi(getIdleStopMs())
-            }}
-            options={IDLE_STOP_MS_OPTIONS.map((ms) => ({
-              value: String(ms),
-              label: IDLE_STOP_MS_LABEL[ms],
-            }))}
-          />
+          <label className="field">
+            <span className="label">New conversation after pause</span>
+            <select
+              name="pause-ms"
+              aria-label="New conversation after pause"
+              value={String(pauseMs)}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                setPauseMs(n)
+                setPauseMsUi(getPauseMs())
+              }}
+            >
+              {PAUSE_MS_OPTIONS.map((ms) => (
+                <option key={ms} value={ms}>
+                  {PAUSE_MS_LABEL[ms]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="label">Stop recording after silence</span>
+            <select
+              name="idle-stop-ms"
+              aria-label="Stop recording after silence"
+              value={String(idleStopMs)}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                setIdleStopMs(n)
+                setIdleStopMsUi(getIdleStopMs())
+              }}
+            >
+              {IDLE_STOP_MS_OPTIONS.map((ms) => (
+                <option key={ms} value={ms}>
+                  {IDLE_STOP_MS_LABEL[ms]}
+                </option>
+              ))}
+            </select>
+          </label>
           <p className="muted">Pause starts a new conversation. Silence can stop the session.</p>
 
           <p className="section-title">OpenAI</p>
