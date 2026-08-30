@@ -1,0 +1,722 @@
+import { analyzeTranscript, extractIntroName } from './analyze'
+import { db } from './db'
+import { formatCoordPlace, nowISO } from './utils'
+import type { Approach } from './types'
+
+export const SILENCE_MS = 45_000
+export const PING_THROTTLE_MS = 10_000
+export const RECORDER_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+  'audio/aac',
+  'audio/ogg;codecs=opus',
+]
+
+export type Ping = {
+  lat: number
+  lng: number
+  accuracy: number | null
+  at: number
+}
+
+export type SessionSnapshot = {
+  live: boolean
+  recording: boolean
+  sessionId: string | null
+  startedAtMs: number | null
+  transcript: string
+  interim: string
+  conversationCount: number
+  error: string | null
+  speechAvailable: boolean
+  speechNote: string | null
+  lat: number | null
+  lng: number | null
+  accuracy: number | null
+  place: string | null
+}
+
+export type SpeechRecLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((ev: SpeechRecResultEvent) => void) | null
+  onend: (() => void) | null
+  onerror: ((ev: { error: string }) => void) | null
+  start: () => void
+  stop: () => void
+  abort?: () => void
+}
+
+export type SpeechRecResultEvent = {
+  resultIndex: number
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>
+}
+
+type SpeechCtor = new () => SpeechRecLike
+
+type RecorderLike = {
+  state: string
+  mimeType?: string
+  ondataavailable: ((ev: { data: Blob }) => void) | null
+  onstop: (() => void) | null
+  start: (timeslice?: number) => void
+  stop: () => void
+}
+
+type RecorderCtor = {
+  new (stream: MediaStream, opts?: { mimeType?: string }): RecorderLike
+  isTypeSupported?: (mime: string) => boolean
+}
+
+export type SessionDeps = {
+  getUserMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>
+  MediaRecorder?: RecorderCtor
+  SpeechRecognition?: SpeechCtor | null
+  geolocation?: Pick<Geolocation, 'watchPosition' | 'clearWatch'> | null
+  now?: () => number
+  wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } | null
+}
+
+const placeCache = new Map<string, string>()
+
+export function geoCacheKey(lat: number, lng: number): string {
+  return `${lat.toFixed(3)},${lng.toFixed(3)}`
+}
+
+export function shouldSplitConversation(
+  lastSpeechAt: number | null,
+  now: number,
+  gapMs = SILENCE_MS,
+): boolean {
+  if (lastSpeechAt == null) return false
+  return now - lastSpeechAt >= gapMs
+}
+
+export function pickRecorderMime(
+  isTypeSupported: (mime: string) => boolean = (mime) => {
+    const ctor = (
+      globalThis as typeof globalThis & {
+        MediaRecorder?: { isTypeSupported?: (m: string) => boolean }
+      }
+    ).MediaRecorder
+    return ctor?.isTypeSupported?.(mime) === true
+  },
+): string {
+  return RECORDER_MIME_CANDIDATES.find((m) => isTypeSupported(m)) ?? ''
+}
+
+export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  const key = geoCacheKey(lat, lng)
+  const hit = placeCache.get(key)
+  if (hit) return hit
+  const fallback = formatCoordPlace(lat, lng)
+  if (import.meta.env.MODE === 'test') {
+    placeCache.set(key, fallback)
+    return fallback
+  }
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lng))}&format=json`
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Field/1.0 (consented study location log)',
+      },
+    })
+    if (!res.ok) {
+      placeCache.set(key, fallback)
+      return fallback
+    }
+    const j = (await res.json()) as {
+      name?: string
+      display_name?: string
+      address?: Record<string, string>
+    }
+    const a = j.address ?? {}
+    const bits = [
+      a.amenity || a.shop || a.tourism || a.leisure || j.name,
+      a.road,
+      a.neighbourhood || a.suburb || a.village || a.town || a.city,
+    ].filter(Boolean)
+    const name =
+      bits.join(', ') ||
+      j.display_name?.split(',').slice(0, 2).join(',').trim() ||
+      fallback
+    placeCache.set(key, name)
+    return name
+  } catch {
+    placeCache.set(key, fallback)
+    return fallback
+  }
+}
+
+function getSpeechCtor(override?: SpeechCtor | null): SpeechCtor | null {
+  if (override !== undefined) return override
+  const w = globalThis as typeof globalThis & {
+    SpeechRecognition?: SpeechCtor
+    webkitSpeechRecognition?: SpeechCtor
+  }
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
+}
+
+const emptySnapshot = (): SessionSnapshot => ({
+  live: false,
+  recording: false,
+  sessionId: null,
+  startedAtMs: null,
+  transcript: '',
+  interim: '',
+  conversationCount: 0,
+  error: null,
+  speechAvailable: false,
+  speechNote: null,
+  lat: null,
+  lng: null,
+  accuracy: null,
+  place: null,
+})
+
+export class SessionRuntime {
+  private listeners = new Set<() => void>()
+  private snapshot: SessionSnapshot = emptySnapshot()
+  private deps: SessionDeps
+  private stream: MediaStream | null = null
+  private recorder: RecorderLike | null = null
+  private chunks: Blob[] = []
+  private recognition: SpeechRecLike | null = null
+  private wantRecognition = false
+  private watchId: number | null = null
+  private wake: { release: () => Promise<void> } | null = null
+  private visibilityBound = false
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null
+  private lastSpeechAt: number | null = null
+  private lastPingAt = 0
+  private convId: string | null = null
+  private convStartedMs: number | null = null
+  private finalTranscript = ''
+  private writeChain: Promise<void> = Promise.resolve()
+  private mime = ''
+
+  constructor(deps: SessionDeps = {}) {
+    this.deps = deps
+    const speech = getSpeechCtor(deps.SpeechRecognition)
+    this.snapshot = {
+      ...emptySnapshot(),
+      speechAvailable: Boolean(speech),
+    }
+  }
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn)
+    return () => {
+      this.listeners.delete(fn)
+    }
+  }
+
+  getSnapshot = (): SessionSnapshot => this.snapshot
+
+  isLive(): boolean {
+    return this.snapshot.live
+  }
+
+  private emit(patch: Partial<SessionSnapshot>): void {
+    this.snapshot = { ...this.snapshot, ...patch }
+    for (const fn of this.listeners) fn()
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now()
+  }
+
+  async start(): Promise<void> {
+    if (this.snapshot.live) return
+    this.emit({ error: null })
+    const gum =
+      this.deps.getUserMedia ??
+      navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices)
+    if (!gum) {
+      this.emit({ error: 'Microphone is not available on this device.' })
+      return
+    }
+    try {
+      this.stream = await gum({ audio: true, video: false })
+    } catch {
+      this.emit({
+        error: 'Microphone permission denied. Enable the mic and retry.',
+      })
+      return
+    }
+
+    const id = crypto.randomUUID()
+    const startedAt = nowISO()
+    const startedAtMs = this.now()
+    await db.sessions.add({ id, startedAt, endedAt: null })
+
+    this.finalTranscript = ''
+    this.chunks = []
+    this.conversationCountReset()
+    this.lastSpeechAt = null
+    this.convId = null
+    this.convStartedMs = null
+    this.mime = pickRecorderMime()
+
+    const speechCtor = getSpeechCtor(this.deps.SpeechRecognition)
+    const speechAvailable = Boolean(speechCtor)
+    this.emit({
+      live: true,
+      recording: false,
+      sessionId: id,
+      startedAtMs,
+      transcript: '',
+      interim: '',
+      conversationCount: 0,
+      error: null,
+      speechAvailable,
+      speechNote: speechAvailable
+        ? null
+        : 'Live transcript needs Chrome. Audio is still being recorded.',
+      lat: null,
+      lng: null,
+      accuracy: null,
+      place: null,
+    })
+
+    this.beginConversation()
+    this.startRecognition()
+    this.beginWatch()
+    void this.acquireWakeLock()
+    this.bindVisibility()
+  }
+
+  private conversationCountReset(): void {
+    /* snapshot reset in start() */
+  }
+
+  async stop(): Promise<void> {
+    if (!this.snapshot.live && !this.snapshot.sessionId) return
+    this.wantRecognition = false
+    this.clearSilenceTimer()
+    this.stopRecognition()
+    this.clearWatch()
+    await this.closeConversation()
+    this.stopStream()
+    void this.releaseWakeLock()
+    this.unbindVisibility()
+    const sessionId = this.snapshot.sessionId
+    if (sessionId) {
+      await db.sessions.update(sessionId, { endedAt: nowISO() })
+    }
+    this.emit({
+      live: false,
+      recording: false,
+      transcript: '',
+      interim: '',
+      error: null,
+    })
+  }
+
+  retry(): void {
+    if (this.snapshot.live) {
+      this.beginWatch()
+      this.startRecognition()
+      if (!this.recorder || this.recorder.state === 'inactive') this.beginConversation()
+      return
+    }
+    void this.start()
+  }
+
+  ingestSpeech(text: string, isFinal: boolean, at = this.now()): void {
+    if (!this.snapshot.live) return
+    const piece = text.trim()
+    if (!piece) return
+    this.lastSpeechAt = at
+    this.scheduleSilenceCheck()
+    if (!this.convId) this.beginConversation()
+    if (isFinal) {
+      this.finalTranscript = `${this.finalTranscript} ${piece}`.replace(/\s+/g, ' ').trim()
+      this.emit({ transcript: this.finalTranscript, interim: '' })
+    } else {
+      this.emit({ transcript: this.finalTranscript, interim: piece })
+    }
+  }
+
+  ingestPosition(ping: Ping): void {
+    if (!this.snapshot.live) return
+    if (this.lastPingAt && ping.at - this.lastPingAt < PING_THROTTLE_MS) {
+      this.emit({
+        lat: ping.lat,
+        lng: ping.lng,
+        accuracy: ping.accuracy,
+      })
+      return
+    }
+    this.lastPingAt = ping.at
+    this.emit({
+      lat: ping.lat,
+      lng: ping.lng,
+      accuracy: ping.accuracy,
+    })
+    void reverseGeocode(ping.lat, ping.lng).then((place) => {
+      if (this.snapshot.live) this.emit({ place })
+    })
+  }
+
+  checkSilence(at = this.now()): boolean {
+    if (!this.snapshot.live) return false
+    if (!shouldSplitConversation(this.lastSpeechAt, at)) return false
+    void this.closeConversation()
+    return true
+  }
+
+  dispose(): void {
+    this.wantRecognition = false
+    this.clearSilenceTimer()
+    this.stopRecognition()
+    this.clearWatch()
+    try {
+      this.recorder?.stop()
+    } catch {
+      /* ignore */
+    }
+    this.recorder = null
+    this.stopStream()
+    void this.releaseWakeLock()
+    this.unbindVisibility()
+    this.listeners.clear()
+    this.snapshot = emptySnapshot()
+  }
+
+  private beginConversation(): void {
+    if (!this.snapshot.live) return
+    if (this.recorder && this.recorder.state === 'recording') return
+    this.convId = crypto.randomUUID()
+    this.convStartedMs = this.now()
+    this.finalTranscript = ''
+    this.chunks = []
+    this.emit({ transcript: '', interim: '' })
+    this.startRecorder()
+  }
+
+  private startRecorder(): void {
+    const stream = this.stream
+    if (!stream) return
+    const Rec =
+      this.deps.MediaRecorder ??
+      ((globalThis as typeof globalThis & { MediaRecorder?: RecorderCtor }).MediaRecorder as
+        | RecorderCtor
+        | undefined)
+    if (!Rec) {
+      this.emit({
+        error: this.snapshot.error ?? 'Audio recorder is not available in this browser.',
+      })
+      return
+    }
+    try {
+      this.recorder = this.mime ? new Rec(stream, { mimeType: this.mime }) : new Rec(stream)
+    } catch {
+      try {
+        this.recorder = new Rec(stream)
+      } catch {
+        this.emit({ error: 'Could not start the audio recorder.' })
+        return
+      }
+    }
+    this.chunks = []
+    this.recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) this.chunks.push(ev.data)
+    }
+    this.recorder.onstop = () => {
+      /* blob assembled in closeConversation */
+    }
+    try {
+      this.recorder.start(1000)
+      this.emit({ recording: true })
+    } catch {
+      this.emit({ error: 'Could not start the audio recorder.' })
+    }
+  }
+
+  private stopRecorder(): Promise<void> {
+    const rec = this.recorder
+    if (!rec || rec.state === 'inactive') {
+      this.emit({ recording: false })
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => {
+      const prev = rec.onstop
+      rec.onstop = () => {
+        prev?.()
+        this.emit({ recording: false })
+        resolve()
+      }
+      try {
+        rec.stop()
+      } catch {
+        this.emit({ recording: false })
+        resolve()
+      }
+      window.setTimeout(resolve, 1500)
+    })
+  }
+
+  private async closeConversation(): Promise<void> {
+    this.clearSilenceTimer()
+    const convId = this.convId
+    const startedMs = this.convStartedMs
+    const transcript = this.finalTranscript.trim()
+    const interim = this.snapshot.interim
+    await this.stopRecorder()
+    this.recorder = null
+    this.convId = null
+    this.convStartedMs = null
+    this.lastSpeechAt = null
+    const combined = `${transcript} ${interim}`.replace(/\s+/g, ' ').trim()
+    this.emit({ transcript: '', interim: '' })
+    if (!convId || startedMs == null) return
+    const durationSec = Math.max(0, Math.round((this.now() - startedMs) / 1000))
+    if (!combined && this.chunks.length === 0) return
+    if (!combined && durationSec < 2) return
+
+    const run = async () => {
+      const analysis = analyzeTranscript(combined, durationSec)
+      const who = extractIntroName(combined) ?? ''
+      const mime = this.mime || 'audio/webm'
+      const blob = this.chunks.length > 0 ? new Blob(this.chunks, { type: mime }) : null
+      const audioId = blob && blob.size > 0 ? crypto.randomUUID() : null
+      if (audioId && blob) {
+        await db.audioClips.add({
+          id: audioId,
+          conversationId: convId,
+          blob,
+          mimeType: mime,
+          createdAt: nowISO(),
+        })
+      }
+      const lat = this.snapshot.lat
+      const lng = this.snapshot.lng
+      let place = this.snapshot.place ?? ''
+      if (!place && lat != null && lng != null) {
+        place = await reverseGeocode(lat, lng)
+      }
+      const now = nowISO()
+      const row: Approach = {
+        id: convId,
+        at: new Date(startedMs).toISOString(),
+        place: place || 'Unknown place',
+        who,
+        opener: '',
+        notes: analysis.summary,
+        outcome: analysis.outcome,
+        feel: null,
+        followUpAt: analysis.followUpAt,
+        followUpDone: false,
+        createdAt: now,
+        updatedAt: now,
+        source: 'recording',
+        lat,
+        lng,
+        accuracy: this.snapshot.accuracy,
+        dwellSeconds: durationSec,
+        sessionId: this.snapshot.sessionId,
+        endedAt: now,
+        transcript: combined,
+        analysis,
+        audioId,
+      }
+      await db.approaches.put(row)
+      this.emit({ conversationCount: this.snapshot.conversationCount + 1 })
+    }
+    this.writeChain = this.writeChain.then(run, run)
+    await this.writeChain
+    this.chunks = []
+    this.finalTranscript = ''
+  }
+
+  private startRecognition(): void {
+    const Ctor = getSpeechCtor(this.deps.SpeechRecognition)
+    if (!Ctor) return
+    this.wantRecognition = true
+    if (this.recognition) return
+    try {
+      const rec = new Ctor()
+      rec.continuous = true
+      rec.interimResults = true
+      rec.lang = 'en-US'
+      rec.onresult = (ev) => {
+        let interim = ''
+        let finals = ''
+        for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+          const piece = ev.results[i]
+          const t = piece[0]?.transcript ?? ''
+          if (piece.isFinal) finals += ` ${t}`
+          else interim += ` ${t}`
+        }
+        if (finals.trim()) this.ingestSpeech(finals, true)
+        else if (interim.trim()) this.ingestSpeech(interim, false)
+      }
+      rec.onend = () => {
+        this.recognition = null
+        if (this.wantRecognition && this.snapshot.live) {
+          window.setTimeout(() => this.startRecognition(), 250)
+        }
+      }
+      rec.onerror = (ev) => {
+        if (ev.error === 'not-allowed') {
+          this.wantRecognition = false
+          this.emit({
+            speechNote: 'Speech permission denied. Audio is still recorded.',
+          })
+          return
+        }
+        if (ev.error === 'aborted') return
+      }
+      rec.start()
+      this.recognition = rec
+    } catch {
+      this.emit({
+        speechNote: 'Live transcript needs Chrome. Audio is still being recorded.',
+        speechAvailable: false,
+      })
+    }
+  }
+
+  private stopRecognition(): void {
+    this.wantRecognition = false
+    try {
+      this.recognition?.stop()
+    } catch {
+      /* ignore */
+    }
+    this.recognition = null
+  }
+
+  private beginWatch(): void {
+    const geo =
+      this.deps.geolocation === undefined
+        ? navigator.geolocation
+        : this.deps.geolocation
+    if (!geo) return
+    this.clearWatch()
+    try {
+      this.watchId = geo.watchPosition(
+        (pos) => {
+          this.ingestPosition({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy ?? null,
+            at: pos.timestamp || this.now(),
+          })
+        },
+        (err) => {
+          if (err.code === 1) {
+            this.emit({
+              error: 'Location permission denied. Audio still records. Enable location and retry.',
+            })
+          }
+        },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+      )
+    } catch {
+      /* location optional */
+    }
+  }
+
+  private clearWatch(): void {
+    const geo =
+      this.deps.geolocation === undefined
+        ? navigator.geolocation
+        : this.deps.geolocation
+    if (this.watchId != null && geo) {
+      try {
+        geo.clearWatch(this.watchId)
+      } catch {
+        /* ignore */
+      }
+    }
+    this.watchId = null
+  }
+
+  private stopStream(): void {
+    this.stream?.getTracks().forEach((t) => {
+      try {
+        t.stop()
+      } catch {
+        /* ignore */
+      }
+    })
+    this.stream = null
+  }
+
+  private scheduleSilenceCheck(): void {
+    this.clearSilenceTimer()
+    this.silenceTimer = setTimeout(() => {
+      this.checkSilence()
+    }, SILENCE_MS)
+  }
+
+  private clearSilenceTimer(): void {
+    if (this.silenceTimer != null) {
+      clearTimeout(this.silenceTimer)
+      this.silenceTimer = null
+    }
+  }
+
+  private onVisibility = (): void => {
+    if (document.visibilityState === 'visible' && this.snapshot.live) {
+      void this.acquireWakeLock()
+    }
+  }
+
+  private bindVisibility(): void {
+    if (this.visibilityBound) return
+    document.addEventListener('visibilitychange', this.onVisibility)
+    this.visibilityBound = true
+  }
+
+  private unbindVisibility(): void {
+    if (!this.visibilityBound) return
+    document.removeEventListener('visibilitychange', this.onVisibility)
+    this.visibilityBound = false
+  }
+
+  private async acquireWakeLock(): Promise<void> {
+    await this.releaseWakeLock()
+    const api =
+      this.deps.wakeLock ??
+      (navigator as Navigator & { wakeLock?: SessionDeps['wakeLock'] }).wakeLock
+    if (!api) return
+    try {
+      this.wake = await api.request('screen')
+    } catch {
+      this.wake = null
+    }
+  }
+
+  private async releaseWakeLock(): Promise<void> {
+    try {
+      await this.wake?.release()
+    } catch {
+      /* ignore */
+    }
+    this.wake = null
+  }
+}
+
+let runtime: SessionRuntime | null = null
+let testDeps: SessionDeps | undefined
+
+export function setSessionTestDeps(deps?: SessionDeps): void {
+  testDeps = deps
+  resetSessionRuntime()
+}
+
+export function getSessionRuntime(): SessionRuntime {
+  if (!runtime) runtime = new SessionRuntime(testDeps ?? {})
+  return runtime
+}
+
+export function resetSessionRuntime(): void {
+  runtime?.dispose()
+  runtime = null
+}
