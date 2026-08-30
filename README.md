@@ -2,7 +2,7 @@
 
 Consented study log. One tap starts a session: this phone records audio, a live transcript (when the browser allows it), and location metadata until you stop. A visible REC indicator stays on. No hidden mic.
 
-Conversations are split after 45 seconds of silence. Live captions are a preview only. When a conversation closes, Field transcribes the saved audio with OpenAI (`gpt-4o-mini-transcribe`, else `whisper-1`) if you have set a key, then understands the text with `gpt-4o-mini` JSON. Without a key, on-device regex analysis is kept as a labeled fallback.
+Conversations are split after 60 seconds of silence. Live captions are a preview only. When a conversation closes, Field transcribes the saved audio with OpenAI (`gpt-4o-mini-transcribe`, else `whisper-1`) if you have set a key, then understands the text with `gpt-4o-mini` JSON. Without a key, on-device regex analysis is kept as a labeled fallback.
 
 Audio stays in IndexedDB on this device. Transcripts are sent to OpenAI only when an API key is set in Settings (`field:openaiKey`).
 

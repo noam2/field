@@ -61,6 +61,26 @@ class FieldDB extends Dexie {
             if (row.insight === undefined) row.insight = null
           })
       })
+    this.version(5)
+      .stores({
+        approaches: 'id, at, place, who, outcome, followUpAt, createdAt, sessionId, source',
+        sessions: 'id, startedAt',
+        audioClips: 'id, conversationId, createdAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('approaches')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            const insight = row.insight
+            if (insight && typeof insight === 'object') {
+              const ins = insight as Record<string, unknown>
+              if (ins.placeType === undefined) ins.placeType = 'other'
+              if (ins.daypart === undefined) ins.daypart = 'afternoon'
+              if (ins.language === undefined) ins.language = 'en'
+            }
+          })
+      })
   }
 }
 

@@ -1,13 +1,15 @@
 import { analyzeTranscript, extractIntroName, tomorrowIso } from './analyze'
 import { db } from './db'
+import { getKeepAlive, speechRecognitionLang } from './lang'
 import { hasApiKey } from './openai'
+import { mergePlaceSignals } from './place'
 import { toast } from './toast'
 import { transcribeAudio } from './transcribe'
-import { understandTranscript } from './understand'
+import { proofTranscript, understandTranscript } from './understand'
 import { formatCoordPlace, nowISO } from './utils'
-import type { Approach, UnderstandContext } from './types'
+import type { Approach, SpokenLanguage, UnderstandContext } from './types'
 
-export const SILENCE_MS = 45_000
+export const SILENCE_MS = 60_000
 export const PING_THROTTLE_MS = 10_000
 export const RECORDER_MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
@@ -39,6 +41,7 @@ export type SessionSnapshot = {
   lng: number | null
   accuracy: number | null
   place: string | null
+  resumeNote: string | null
 }
 
 export type SpeechRecLike = {
@@ -83,10 +86,89 @@ export type SessionDeps = {
   wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } | null
 }
 
-const placeCache = new Map<string, string>()
+export type ReverseGeo = {
+  name: string
+  nominatimType?: string
+  nominatimClass?: string
+}
+
+const placeCache = new Map<string, ReverseGeo>()
 
 export function geoCacheKey(lat: number, lng: number): string {
   return `${lat.toFixed(3)},${lng.toFixed(3)}`
+}
+
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
+
+type AudioCtxCtor = new () => AudioContext
+
+function audioContextCtor(): AudioCtxCtor | null {
+  const g = globalThis as typeof globalThis & {
+    AudioContext?: AudioCtxCtor
+    webkitAudioContext?: AudioCtxCtor
+  }
+  return g.AudioContext ?? g.webkitAudioContext ?? null
+}
+
+let keepOsc: { ctx: AudioContext; osc: OscillatorNode } | null = null
+let keepAudio: HTMLAudioElement | null = null
+
+export function startKeepAlive(): void {
+  stopKeepAlive()
+  try {
+    const AC = audioContextCtor()
+    if (AC) {
+      const ctx = new AC()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      gain.gain.value = 0
+      osc.frequency.value = 20
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      void ctx.resume?.()
+      keepOsc = { ctx, osc }
+    }
+  } catch {
+    keepOsc = null
+  }
+  if (keepOsc) return
+  if (import.meta.env.MODE === 'test') return
+  try {
+    const el = new Audio(SILENT_WAV)
+    el.loop = true
+    el.volume = 0
+    const play = el.play()
+    if (play && typeof play.catch === 'function') void play.catch(() => {})
+    keepAudio = el
+  } catch {
+    keepAudio = null
+  }
+}
+
+export function stopKeepAlive(): void {
+  try {
+    keepOsc?.osc.stop()
+  } catch {
+    /* ignore */
+  }
+  try {
+    void keepOsc?.ctx.close()
+  } catch {
+    /* ignore */
+  }
+  keepOsc = null
+  try {
+    if (keepAudio) {
+      keepAudio.pause()
+      keepAudio.removeAttribute('src')
+      keepAudio.load()
+    }
+  } catch {
+    /* ignore */
+  }
+  keepAudio = null
 }
 
 export function shouldSplitConversation(
@@ -111,11 +193,11 @@ export function pickRecorderMime(
   return RECORDER_MIME_CANDIDATES.find((m) => isTypeSupported(m)) ?? ''
 }
 
-export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+export async function reverseGeocode(lat: number, lng: number): Promise<ReverseGeo> {
   const key = geoCacheKey(lat, lng)
   const hit = placeCache.get(key)
   if (hit) return hit
-  const fallback = formatCoordPlace(lat, lng)
+  const fallback: ReverseGeo = { name: formatCoordPlace(lat, lng) }
   if (import.meta.env.MODE === 'test') {
     placeCache.set(key, fallback)
     return fallback
@@ -136,19 +218,27 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
       name?: string
       display_name?: string
       address?: Record<string, string>
+      type?: string
+      class?: string
+      namedetails?: Record<string, string>
     }
     const a = j.address ?? {}
     const bits = [
-      a.amenity || a.shop || a.tourism || a.leisure || j.name,
+      a.amenity || a.shop || a.tourism || a.leisure || j.namedetails?.name || j.name,
       a.road,
       a.neighbourhood || a.suburb || a.village || a.town || a.city,
     ].filter(Boolean)
     const name =
       bits.join(', ') ||
       j.display_name?.split(',').slice(0, 2).join(',').trim() ||
-      fallback
-    placeCache.set(key, name)
-    return name
+      fallback.name
+    const geo: ReverseGeo = {
+      name,
+      nominatimType: j.type,
+      nominatimClass: j.class,
+    }
+    placeCache.set(key, geo)
+    return geo
   } catch {
     placeCache.set(key, fallback)
     return fallback
@@ -179,6 +269,7 @@ const emptySnapshot = (): SessionSnapshot => ({
   lng: null,
   accuracy: null,
   place: null,
+  resumeNote: null,
 })
 
 export class SessionRuntime {
@@ -202,6 +293,14 @@ export class SessionRuntime {
   private writeChain: Promise<void> = Promise.resolve()
   private enrichChain: Promise<void> = Promise.resolve()
   private mime = ''
+  private geoType: string | null = null
+  private geoClass: string | null = null
+  private hiddenWhileLive = false
+  private pageshowBound = false
+  private energyTimer: ReturnType<typeof setInterval> | null = null
+  private analyser: AnalyserNode | null = null
+  private audioCtx: AudioContext | null = null
+  private energySource: MediaStreamAudioSourceNode | null = null
 
   constructor(deps: SessionDeps = {}) {
     this.deps = deps
@@ -269,6 +368,9 @@ export class SessionRuntime {
     this.convId = null
     this.convStartedMs = null
     this.mime = pickRecorderMime()
+    this.geoType = null
+    this.geoClass = null
+    this.hiddenWhileLive = false
 
     const speechCtor = getSpeechCtor(this.deps.SpeechRecognition)
     const speechAvailable = Boolean(speechCtor)
@@ -289,6 +391,7 @@ export class SessionRuntime {
       lng: null,
       accuracy: null,
       place: null,
+      resumeNote: null,
     })
 
     this.beginConversation()
@@ -296,6 +399,8 @@ export class SessionRuntime {
     this.beginWatch()
     void this.acquireWakeLock()
     this.bindVisibility()
+    this.startEnergyMonitor()
+    if (getKeepAlive()) startKeepAlive()
   }
 
   private conversationCountReset(): void {
@@ -310,6 +415,8 @@ export class SessionRuntime {
     this.clearWatch()
     await this.closeConversation()
     this.stopStream()
+    this.stopEnergyMonitor()
+    stopKeepAlive()
     void this.releaseWakeLock()
     this.unbindVisibility()
     const sessionId = this.snapshot.sessionId
@@ -366,8 +473,11 @@ export class SessionRuntime {
       lng: ping.lng,
       accuracy: ping.accuracy,
     })
-    void reverseGeocode(ping.lat, ping.lng).then((place) => {
-      if (this.snapshot.live) this.emit({ place })
+    void reverseGeocode(ping.lat, ping.lng).then((geo) => {
+      if (!this.snapshot.live) return
+      this.geoType = geo.nominatimType ?? null
+      this.geoClass = geo.nominatimClass ?? null
+      this.emit({ place: geo.name })
     })
   }
 
@@ -390,6 +500,8 @@ export class SessionRuntime {
     }
     this.recorder = null
     this.stopStream()
+    this.stopEnergyMonitor()
+    stopKeepAlive()
     void this.releaseWakeLock()
     this.unbindVisibility()
     this.listeners.clear()
@@ -506,7 +618,10 @@ export class SessionRuntime {
       const lng = this.snapshot.lng
       let place = this.snapshot.place ?? ''
       if (!place && lat != null && lng != null) {
-        place = await reverseGeocode(lat, lng)
+        const geo = await reverseGeocode(lat, lng)
+        place = geo.name
+        this.geoType = geo.nominatimType ?? this.geoType
+        this.geoClass = geo.nominatimClass ?? this.geoClass
       }
       const keyed = hasApiKey()
       const now = nowISO()
@@ -546,7 +661,10 @@ export class SessionRuntime {
           lat,
           lng,
         }
-        const job = this.enrichConversation(row.id, blob, mime, combined, ctx)
+        const job = this.enrichConversation(row.id, blob, mime, combined, ctx, {
+          nominatimType: this.geoType ?? undefined,
+          nominatimClass: this.geoClass ?? undefined,
+        })
         this.enrichChain = this.enrichChain.then(() => job, () => job)
       }
     }
@@ -562,21 +680,35 @@ export class SessionRuntime {
     mime: string,
     liveTranscript: string,
     ctx: UnderstandContext,
+    geo?: { nominatimType?: string; nominatimClass?: string },
   ): Promise<void> {
     let text = liveTranscript
     let transcribed = false
+    let proofLang: SpokenLanguage | undefined
     if (blob && blob.size > 0) {
       try {
         text = await transcribeAudio(blob, mime)
         transcribed = true
+        try {
+          const proofed = await proofTranscript(text)
+          text = proofed.text
+          proofLang = proofed.language
+        } catch {
+          /* keep Whisper text */
+        }
       } catch {
         text = liveTranscript
       }
     }
     try {
-      const insight = await understandTranscript(text, ctx)
+      const raw = await understandTranscript(text, ctx)
       const existing = await db.approaches.get(id)
       if (!existing) return
+      const insight = mergePlaceSignals(raw, existing.place || ctx.place, existing.at, {
+        nominatimType: geo?.nominatimType,
+        nominatimClass: geo?.nominatimClass,
+        language: proofLang ?? raw.language,
+      })
       const who = insight.who.trim() || existing.who
       const followUpAt =
         existing.followUpAt ??
@@ -611,8 +743,10 @@ export class SessionRuntime {
       const rec = new Ctor()
       rec.continuous = true
       rec.interimResults = true
-      rec.lang = 'en-US'
+      rec.lang = speechRecognitionLang()
       rec.onresult = (ev) => {
+        this.lastSpeechAt = this.now()
+        this.scheduleSilenceCheck()
         let interim = ''
         let finals = ''
         for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
@@ -732,21 +866,131 @@ export class SessionRuntime {
   }
 
   private onVisibility = (): void => {
-    if (document.visibilityState === 'visible' && this.snapshot.live) {
-      void this.acquireWakeLock()
+    if (!this.snapshot.live) return
+    if (document.visibilityState === 'hidden') {
+      this.hiddenWhileLive = true
+      return
+    }
+    this.handleResume()
+  }
+
+  private onPageShow = (): void => {
+    if (this.snapshot.live) this.handleResume()
+  }
+
+  private handleResume(): void {
+    if (!this.snapshot.live) return
+    void this.acquireWakeLock()
+    if (getKeepAlive()) {
+      startKeepAlive()
+      this.restartRecognition()
+    }
+    if (this.hiddenWhileLive) {
+      this.hiddenWhileLive = false
+      const recording = this.recorder?.state === 'recording' || this.snapshot.recording
+      this.emit({
+        resumeNote: recording
+          ? 'Recording continued while you were away.'
+          : 'Recording was interrupted. Audio may have stopped — keep Field on screen.',
+      })
     }
   }
 
+  private restartRecognition(): void {
+    if (!this.snapshot.live) return
+    this.wantRecognition = true
+    if (this.recognition) {
+      try {
+        this.recognition.stop()
+      } catch {
+        /* onend restarts */
+      }
+      return
+    }
+    this.startRecognition()
+  }
+
   private bindVisibility(): void {
-    if (this.visibilityBound) return
-    document.addEventListener('visibilitychange', this.onVisibility)
-    this.visibilityBound = true
+    if (!this.visibilityBound) {
+      document.addEventListener('visibilitychange', this.onVisibility)
+      this.visibilityBound = true
+    }
+    if (!this.pageshowBound) {
+      window.addEventListener('pageshow', this.onPageShow)
+      this.pageshowBound = true
+    }
   }
 
   private unbindVisibility(): void {
-    if (!this.visibilityBound) return
-    document.removeEventListener('visibilitychange', this.onVisibility)
-    this.visibilityBound = false
+    if (this.visibilityBound) {
+      document.removeEventListener('visibilitychange', this.onVisibility)
+      this.visibilityBound = false
+    }
+    if (this.pageshowBound) {
+      window.removeEventListener('pageshow', this.onPageShow)
+      this.pageshowBound = false
+    }
+  }
+
+  private startEnergyMonitor(): void {
+    this.stopEnergyMonitor()
+    const stream = this.stream
+    if (!stream) return
+    const AC = audioContextCtor()
+    if (!AC) return
+    try {
+      const ctx = new AC()
+      const source = ctx.createMediaStreamSource(stream)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      analyser.smoothingTimeConstant = 0.3
+      source.connect(analyser)
+      this.audioCtx = ctx
+      this.analyser = analyser
+      this.energySource = source
+      void ctx.resume?.()
+      this.energyTimer = setInterval(() => this.sampleEnergy(), 250)
+    } catch {
+      this.stopEnergyMonitor()
+    }
+  }
+
+  private sampleEnergy(): void {
+    if (!this.analyser || !this.snapshot.live) return
+    try {
+      const buf = new Float32Array(this.analyser.fftSize)
+      this.analyser.getFloatTimeDomainData(buf as Parameters<AnalyserNode['getFloatTimeDomainData']>[0])
+      let sum = 0
+      for (let i = 0; i < buf.length; i += 1) sum += buf[i] * buf[i]
+      const rms = Math.sqrt(sum / buf.length)
+      if (rms > 0.04) {
+        this.lastSpeechAt = this.now()
+        this.scheduleSilenceCheck()
+        if (!this.convId) this.beginConversation()
+      }
+    } catch {
+      /* analyser optional */
+    }
+  }
+
+  private stopEnergyMonitor(): void {
+    if (this.energyTimer != null) {
+      clearInterval(this.energyTimer)
+      this.energyTimer = null
+    }
+    try {
+      this.energySource?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    this.energySource = null
+    this.analyser = null
+    try {
+      void this.audioCtx?.close()
+    } catch {
+      /* ignore */
+    }
+    this.audioCtx = null
   }
 
   private async acquireWakeLock(): Promise<void> {

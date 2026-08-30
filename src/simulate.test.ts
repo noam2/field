@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   filterByHours,
   sentimentCounts,
+  successByDaypart,
   successByPlace,
+  successByPlaceType,
   successRate,
   topicCounts,
 } from './stats'
@@ -356,5 +358,96 @@ describe('simulation suite', () => {
     expect(topics.food).toBe(3)
     expect(topics.music).toBe(3)
     expect(topics.nightlife).toBe(4)
+  })
+})
+
+describe('place type and daypart stats', () => {
+  it('beach-night outperforms library-morning', () => {
+    const night = '2026-08-30T21:30:00.000Z' // 00:30 IDT
+    const morning = '2026-08-30T05:30:00.000Z' // 08:30 IDT
+    const beachOk = modelJson({
+      sentiment: 'positive',
+      success: true,
+      valence: 0.8,
+      who: 'Noa',
+      topics: ['travel'],
+      summary: 'Number at the beach.',
+      exchangedContact: true,
+    })
+    beachOk.placeType = 'beach'
+    beachOk.daypart = 'night'
+    beachOk.language = 'he'
+    const libNo = modelJson({
+      sentiment: 'negative',
+      success: false,
+      valence: -0.4,
+      who: '',
+      topics: ['school'],
+      summary: 'Quiet rejection at the library.',
+      exchangedContact: false,
+      rejection: true,
+    })
+    libNo.placeType = 'library'
+    libNo.daypart = 'morning'
+    libNo.language = 'en'
+
+    const rows = [
+      approach({
+        id: 'bn-1',
+        at: night,
+        place: 'Gordon Beach',
+        source: 'recording',
+        insight: parseInsightJson(beachOk),
+        analysisSource: 'model',
+        outcome: 'number',
+        dwellSeconds: 80,
+      }),
+      approach({
+        id: 'bn-2',
+        at: night,
+        place: 'חוף התלאביב',
+        source: 'recording',
+        insight: parseInsightJson(beachOk),
+        analysisSource: 'model',
+        outcome: 'number',
+        dwellSeconds: 70,
+      }),
+      approach({
+        id: 'lm-1',
+        at: morning,
+        place: 'Dizengoff library',
+        source: 'recording',
+        insight: parseInsightJson(libNo),
+        analysisSource: 'model',
+        outcome: 'no',
+        dwellSeconds: 40,
+      }),
+      approach({
+        id: 'lm-2',
+        at: morning,
+        place: 'Dizengoff library',
+        source: 'recording',
+        insight: parseInsightJson(libNo),
+        analysisSource: 'model',
+        outcome: 'no',
+        dwellSeconds: 35,
+      }),
+    ]
+
+    const types = successByPlaceType(rows, 1)
+    const beach = types.find((t) => t.label === 'Beach')
+    const library = types.find((t) => t.label === 'Library')
+    expect(beach?.count).toBe(2)
+    expect(library?.count).toBe(2)
+    expect(beach!.rate).toBe(1)
+    expect(library!.rate).toBe(0)
+    expect(beach!.rate).toBeGreaterThan(library!.rate)
+
+    const parts = successByDaypart(rows)
+    const nightRow = parts.find((d) => d.label === 'Night')
+    const morningRow = parts.find((d) => d.label === 'Morning')
+    expect(nightRow?.count).toBe(2)
+    expect(morningRow?.count).toBe(2)
+    expect(nightRow!.rate).toBeGreaterThan(morningRow!.rate)
   })
 })

@@ -709,11 +709,26 @@ textarea:focus {
   white-space: pre-wrap;
   font-size: 15px;
   line-height: 1.5;
+  unicode-bidi: plaintext;
 }
 
 .transcript-full {
   white-space: pre-wrap;
   line-height: 1.5;
+  unicode-bidi: plaintext;
+}
+
+.resume-banner {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.resume-banner.is-warn {
+  background: var(--danger-dim);
+  color: var(--danger);
 }
 
 .meta-grid {

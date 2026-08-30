@@ -130,9 +130,9 @@ export function History({ approaches }: Props) {
                   setEditing(false)
                 }}
               >
-                <span className="hist-who">{row.who.trim() || row.place || 'Conversation'}</span>
+                <span className="hist-who" dir="auto">{row.who.trim() || row.place || 'Conversation'}</span>
                 <span className="muted">{formatTime(row.at)}</span>
-                <span className="hist-place">
+                <span className="hist-place" dir="auto">
                   {eventLabel(row)}
                   <span className="dot">·</span>
                   {formatDuration(row.dwellSeconds)}
@@ -261,7 +261,7 @@ function Detail({
             </span>
             {row.analysisSource === 'rules' && <span className="sent-chip">rules fallback</span>}
           </div>
-          <p>{row.insight.summary}</p>
+          <p dir="auto">{row.insight.summary}</p>
           {row.insight.topics.length > 0 && (
             <p className="muted">Topics: {row.insight.topics.join(', ')}</p>
           )}
@@ -270,7 +270,7 @@ function Detail({
               <p className="section-title">Commitments</p>
               <ul className="commit-list">
                 {row.insight.commitments.map((c) => (
-                  <li key={c}>{c}</li>
+                  <li key={c} dir="auto">{c}</li>
                 ))}
               </ul>
             </>
@@ -280,7 +280,7 @@ function Detail({
               <p className="section-title">Objections</p>
               <ul className="commit-list">
                 {row.insight.objections.map((c) => (
-                  <li key={c}>{c}</li>
+                  <li key={c} dir="auto">{c}</li>
                 ))}
               </ul>
             </>
@@ -288,7 +288,7 @@ function Detail({
           {row.insight.followUpSuggestion && (
             <>
               <p className="section-title">Follow-up</p>
-              <p>{row.insight.followUpSuggestion}</p>
+              <p dir="auto">{row.insight.followUpSuggestion}</p>
             </>
           )}
         </>
@@ -304,7 +304,7 @@ function Detail({
       {row.transcript.trim() ? (
         <>
           <p className="section-title">Transcript</p>
-          <p className="transcript-full">{row.transcript}</p>
+          <p className="transcript-full" dir="auto">{row.transcript}</p>
         </>
       ) : null}
 
@@ -326,7 +326,7 @@ function Detail({
       {row.notes.trim() && !row.transcript.trim() && (
         <>
           <p className="section-title">Notes</p>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{row.notes}</p>
+          <p style={{ whiteSpace: 'pre-wrap' }} dir="auto">{row.notes}</p>
         </>
       )}
 

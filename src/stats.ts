@@ -1,4 +1,6 @@
-import type { Approach, Outcome, Sentiment } from './types'
+import { classifyPlaceType, daypartFromIso, DAYPART_LABEL, PLACE_TYPE_LABEL } from './place'
+import type { Approach, Daypart, Outcome, PlaceType, Sentiment, SpokenLanguage } from './types'
+import { DAYPARTS, PLACE_TYPES } from './types'
 import {
   OUTCOME_LABEL,
   OUTCOMES,
@@ -376,4 +378,73 @@ export function peopleWithNumbers(approaches: Approach[]): PersonCard[] {
 
 export function pct(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+export function approachDaypart(a: Approach): Daypart {
+  return a.insight?.daypart ?? daypartFromIso(a.at)
+}
+
+export function approachPlaceType(a: Approach): PlaceType {
+  if (a.insight?.placeType && a.insight.placeType !== 'other') return a.insight.placeType
+  return classifyPlaceType(a.place)
+}
+
+export function approachLanguage(a: Approach): SpokenLanguage | null {
+  return a.insight?.language ?? null
+}
+
+export function successByDaypart(approaches: Approach[]): Bucket[] {
+  const groups = new Map<Daypart, { count: number; converted: number }>()
+  for (const d of DAYPARTS) groups.set(d, { count: 0, converted: 0 })
+  for (const a of approaches) {
+    const d = approachDaypart(a)
+    const g = groups.get(d)!
+    g.count += 1
+    if (approachSuccess(a)) g.converted += 1
+  }
+  return DAYPARTS.map((d) => {
+    const g = groups.get(d)!
+    return {
+      label: DAYPART_LABEL[d],
+      count: g.count,
+      converted: g.converted,
+      rate: g.count === 0 ? 0 : g.converted / g.count,
+    }
+  }).filter((b) => b.count > 0)
+}
+
+export function successByPlaceType(approaches: Approach[], minCount = 1): Bucket[] {
+  const groups = new Map<PlaceType, { count: number; converted: number }>()
+  for (const a of approaches) {
+    const t = approachPlaceType(a)
+    const g = groups.get(t) ?? { count: 0, converted: 0 }
+    g.count += 1
+    if (approachSuccess(a)) g.converted += 1
+    groups.set(t, g)
+  }
+  return PLACE_TYPES.filter((t) => (groups.get(t)?.count ?? 0) >= minCount).map((t) => {
+    const g = groups.get(t)!
+    return {
+      label: PLACE_TYPE_LABEL[t],
+      count: g.count,
+      converted: g.converted,
+      rate: g.count === 0 ? 0 : g.converted / g.count,
+    }
+  }).sort((a, b) => b.rate - a.rate || b.count - a.count)
+}
+
+export function languageCounts(approaches: Approach[]): {
+  he: number
+  en: number
+  mixed: number
+  known: number
+} {
+  const counts = { he: 0, en: 0, mixed: 0, known: 0 }
+  for (const a of approaches) {
+    const lang = approachLanguage(a)
+    if (!lang) continue
+    counts[lang] += 1
+    counts.known += 1
+  }
+  return counts
 }

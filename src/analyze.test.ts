@@ -92,6 +92,23 @@ describe('analyzeTranscript fixtures', () => {
     expect(analyzeTranscript('', 0).summary).toBe('No speech captured.')
     expect(analyzeTranscript('   ', 12).summary).toMatch(/12s/)
   })
+
+  it('Hebrew rejection יש לי חבר', () => {
+    const a = analyzeTranscript('נחמד לדבר אבל יש לי חבר', 20)
+    expect(a.outcome).toBe('no')
+  })
+
+  it('Hebrew schedule מחר קופי', () => {
+    const a = analyzeTranscript('בוא נעשה מחר קופי', 20)
+    expect(a.scheduled).toBe(true)
+    expect(a.outcome).toBe('date')
+  })
+
+  it('Hebrew contact הואצאפ', () => {
+    const a = analyzeTranscript('תשלחי לי הואצאפ', 20)
+    expect(a.exchangedContact).toBe(true)
+    expect(a.outcome).toBe('number')
+  })
 })
 
 describe('pickOutcome order', () => {

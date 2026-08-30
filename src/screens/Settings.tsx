@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react'
 import { Overlay } from '../components/Overlay'
+import { Segmented } from '../components/Segmented'
 import { db, setLastPlace } from '../db'
+import { getKeepAlive, getSpeechLang, setKeepAlive, setSpeechLang } from '../lang'
 import { getApiKey, hasApiKey, setApiKey } from '../openai'
-import { getSessionRuntime } from '../session'
+import { getSessionRuntime, startKeepAlive, stopKeepAlive } from '../session'
 import { toast } from '../toast'
-import type { BackupFile } from '../types'
+import type { BackupFile, SpeechLangPref } from '../types'
 import { coerceApproach, isSession, nowISO } from '../utils'
 import { ManualLog } from './ManualLog'
 
@@ -18,6 +20,8 @@ export function Settings({ onClose }: Props) {
   const [keyDraft, setKeyDraft] = useState(() => getApiKey())
   const [keySaved, setKeySaved] = useState(() => hasApiKey())
   const [testing, setTesting] = useState(false)
+  const [speechLang, setSpeechLangUi] = useState<SpeechLangPref>(() => getSpeechLang())
+  const [keepAlive, setKeepAliveUi] = useState(() => getKeepAlive())
 
   async function exportJson() {
     const approaches = await db.approaches.toArray()
@@ -99,6 +103,42 @@ export function Settings({ onClose }: Props) {
               </p>
             </div>
           )}
+
+          <p className="section-title">Speech</p>
+          <Segmented
+            name="speech-lang"
+            legend="Speech language"
+            value={speechLang}
+            onChange={(v) => {
+              setSpeechLang(v)
+              setSpeechLangUi(v)
+            }}
+            options={[
+              { value: 'auto', label: 'Auto' },
+              { value: 'he', label: 'Hebrew' },
+              { value: 'en', label: 'English' },
+            ]}
+          />
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={keepAlive}
+              onChange={(e) => {
+                const on = e.target.checked
+                setKeepAlive(on)
+                setKeepAliveUi(on)
+                if (getSessionRuntime().isLive()) {
+                  if (on) startKeepAlive()
+                  else stopKeepAlive()
+                }
+              }}
+            />
+            <span>Keep recording in background</span>
+          </label>
+          <p className="muted">
+            Android can keep the mic with the screen off. iPhone Safari stops audio when you leave
+            Field — keep the app on screen.
+          </p>
 
           <p className="section-title">OpenAI</p>
           <label className="field">

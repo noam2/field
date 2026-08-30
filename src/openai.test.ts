@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setSpeechLang } from './lang'
 import { getApiKey, hasApiKey, openaiHeaders, setApiKey } from './openai'
 import { transcribeAudio } from './transcribe'
-import { parseInsightJson, understandTranscript } from './understand'
+import { parseInsightJson, parseProofJson, understandTranscript } from './understand'
 
 const VALID = {
   sentiment: 'positive',
@@ -74,7 +75,7 @@ describe('transcribeAudio', () => {
       expect(init?.body).toBeInstanceOf(FormData)
       const form = init!.body as FormData
       expect(form.get('model')).toBe('gpt-4o-mini-transcribe')
-      expect(form.get('language')).toBe('en')
+      expect(form.get('language')).toBeNull()
       expect(form.get('response_format')).toBe('text')
       expect(form.get('file')).toBeTruthy()
       return new Response('hello from whisper', { status: 200 })
@@ -83,6 +84,19 @@ describe('transcribeAudio', () => {
     const text = await transcribeAudio(new Blob(['abc'], { type: 'audio/webm' }), 'audio/webm')
     expect(text).toBe('hello from whisper')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('Hebrew settings send language=he', async () => {
+    setApiKey('sk-test-field')
+    setSpeechLang('he')
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const form = init!.body as FormData
+      expect(form.get('language')).toBe('he')
+      return new Response('שלום', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const text = await transcribeAudio(new Blob(['abc'], { type: 'audio/webm' }), 'audio/webm')
+    expect(text).toBe('שלום')
   })
 
   it('does not fetch understand without an API key', async () => {
@@ -152,5 +166,18 @@ describe('understandTranscript', () => {
       }),
     ).rejects.toThrow(/key/i)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseProofJson', () => {
+  it('parses language he/en/mixed', () => {
+    expect(parseProofJson({ language: 'he', text: 'שלום' })).toEqual({ language: 'he', text: 'שלום' })
+    expect(parseProofJson({ language: 'en', text: 'hello' })).toEqual({ language: 'en', text: 'hello' })
+    expect(parseProofJson({ language: 'mixed', text: 'hi שלום' })).toEqual({
+      language: 'mixed',
+      text: 'hi שלום',
+    })
+    expect(parseProofJson({ language: 'fr', text: 'bonjour' })).toBeNull()
+    expect(parseProofJson({ language: 'he' })).toBeNull()
   })
 })

@@ -4,6 +4,43 @@ export type ApproachSource = 'auto' | 'manual' | 'recording'
 export type AnalysisSource = 'rules' | 'model' | 'pending'
 export type Sentiment = 'positive' | 'mixed' | 'negative' | 'neutral'
 export type Energy = 'low' | 'medium' | 'high'
+export type PlaceType =
+  | 'beach'
+  | 'bar'
+  | 'club'
+  | 'cafe'
+  | 'restaurant'
+  | 'library'
+  | 'park'
+  | 'gym'
+  | 'street'
+  | 'home'
+  | 'work'
+  | 'transit'
+  | 'other'
+export type Daypart = 'morning' | 'afternoon' | 'evening' | 'night'
+export type SpokenLanguage = 'he' | 'en' | 'mixed'
+export type SpeechLangPref = 'auto' | 'he' | 'en'
+
+export const PLACE_TYPES: PlaceType[] = [
+  'beach',
+  'bar',
+  'club',
+  'cafe',
+  'restaurant',
+  'library',
+  'park',
+  'gym',
+  'street',
+  'home',
+  'work',
+  'transit',
+  'other',
+]
+
+export const DAYPARTS: Daypart[] = ['morning', 'afternoon', 'evening', 'night']
+
+export const SPOKEN_LANGUAGES: SpokenLanguage[] = ['he', 'en', 'mixed']
 
 export type TranscriptAnalysis = {
   wordCount: number
@@ -34,6 +71,9 @@ export type Insight = {
   scheduled: boolean
   rejection: boolean
   model: string
+  placeType?: PlaceType
+  daypart?: Daypart
+  language?: SpokenLanguage
 }
 
 export type Approach = {

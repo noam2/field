@@ -1,11 +1,14 @@
 import { useMemo } from 'react'
 import {
   hourStats,
+  languageCounts,
   meanValenceByPlace,
   pct,
   recordingStats,
   recordingsOnly,
+  successByDaypart,
   successByPlace,
+  successByPlaceType,
   weekCounts,
   weekdayStats,
 } from '../stats'
@@ -20,6 +23,9 @@ export function Stats({ approaches, onLog }: Props) {
   const weeks = useMemo(() => weekCounts(recs), [recs])
   const hours = useMemo(() => hourStats(recs), [recs])
   const days = useMemo(() => weekdayStats(recs), [recs])
+  const dayparts = useMemo(() => successByDaypart(recs), [recs])
+  const placeTypes = useMemo(() => successByPlaceType(recs, 1), [recs])
+  const langs = useMemo(() => languageCounts(recs), [recs])
   const places = useMemo(() => successByPlace(recs, 2), [recs])
   const valencePlaces = useMemo(() => meanValenceByPlace(recs, 2), [recs])
   const streak = useMemo(() => computeStreak(recs), [recs])
@@ -44,6 +50,8 @@ export function Stats({ approaches, onLog }: Props) {
   }
 
   const weekMax = Math.max(weeks.thisWeek, weeks.lastWeek, 1)
+  const daypartMax = Math.max(...dayparts.map((d) => d.rate), 0.01)
+  const typeMax = Math.max(...placeTypes.map((d) => d.rate), 0.01)
   const hourMax = Math.max(...hours.map((h) => h.rate), 0.01)
   const dayMax = Math.max(...days.map((d) => d.rate), 0.01)
   const placeMax = Math.max(...places.map((p) => p.rate), 0.01)
@@ -103,6 +111,45 @@ export function Stats({ approaches, onLog }: Props) {
           <p className="stat-n">{since ?? '—'}</p>
         </div>
       </div>
+
+
+      <p className="section-title">Success by time of day</p>
+      {dayparts.length === 0 ? (
+        <p className="muted">No time-of-day data yet.</p>
+      ) : (
+        dayparts.map((row) => (
+          <Bar key={row.label} label={row.label} value={row.rate} max={daypartMax} hint={`${pct(row.rate)} · ${row.count}`} />
+        ))
+      )}
+
+      <p className="section-title">Success by place type</p>
+      {placeTypes.length === 0 ? (
+        <p className="muted">No place-type data yet.</p>
+      ) : (
+        placeTypes.map((row) => (
+          <Bar key={row.label} label={row.label} value={row.rate} max={typeMax} hint={`${pct(row.rate)} · ${row.count}`} />
+        ))
+      )}
+
+      {langs.known > 0 && (
+        <>
+          <p className="section-title">Language mix</p>
+          <div className="stat-grid">
+            <div className="stat-tile">
+              <p className="muted">Hebrew</p>
+              <p className="stat-n">{langs.he}</p>
+            </div>
+            <div className="stat-tile">
+              <p className="muted">English</p>
+              <p className="stat-n">{langs.en}</p>
+            </div>
+            <div className="stat-tile">
+              <p className="muted">Mixed</p>
+              <p className="stat-n">{langs.mixed}</p>
+            </div>
+          </div>
+        </>
+      )}
 
       <p className="section-title">Sentiment</p>
       <div className="stat-grid">

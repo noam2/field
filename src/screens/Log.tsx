@@ -101,7 +101,15 @@ export function Log({ approaches }: Props) {
         </div>
       </div>
 
-      <p className="hint">Keep Field open. iOS will suspend background capture in a PWA.</p>
+      <p className="hint">
+        Android can keep the mic with the screen off. iPhone Safari stops audio when you leave Field
+        — keep the app on screen.
+      </p>
+      {snap.resumeNote && (
+        <p className={snap.resumeNote.includes('interrupted') ? 'resume-banner is-warn' : 'resume-banner'} role="status">
+          {snap.resumeNote}
+        </p>
+      )}
 
       {snap.speechNote && <p className="speech-note">{snap.speechNote}</p>}
       {!hasApiKey() && (
@@ -135,7 +143,7 @@ export function Log({ approaches }: Props) {
       </div>
 
       <p className="section-title">Live transcript</p>
-      <div ref={scroller} className="transcript-live" aria-live="polite">
+      <div ref={scroller} className="transcript-live" aria-live="polite" dir="auto">
         {liveText || <span className="muted">Listening…</span>}
       </div>
 

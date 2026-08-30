@@ -7,6 +7,8 @@ import {
   resetSessionRuntime,
   shouldSplitConversation,
   SILENCE_MS,
+  startKeepAlive,
+  stopKeepAlive,
 } from './session'
 import * as understand from './understand'
 
@@ -25,12 +27,30 @@ describe('shouldSplitConversation', () => {
     expect(shouldSplitConversation(null, 100_000)).toBe(false)
   })
 
-  it('does not split before 45s', () => {
-    expect(shouldSplitConversation(0, 44_999)).toBe(false)
+  it('does not split before 60s', () => {
+    expect(shouldSplitConversation(0, 59_999)).toBe(false)
   })
 
-  it('splits at 45s of silence', () => {
+  it('splits at 60s of silence', () => {
     expect(shouldSplitConversation(1_000, 1_000 + SILENCE_MS)).toBe(true)
+  })
+
+  it('59s is false and 60s is true', () => {
+    expect(shouldSplitConversation(0, 59_000)).toBe(false)
+    expect(shouldSplitConversation(0, 60_000)).toBe(true)
+  })
+
+  it('SILENCE_MS is 60000', () => {
+    expect(SILENCE_MS).toBe(60_000)
+  })
+})
+
+describe('keepAlive', () => {
+  it('start/stop does not throw', () => {
+    expect(() => {
+      startKeepAlive()
+      stopKeepAlive()
+    }).not.toThrow()
   })
 })
 

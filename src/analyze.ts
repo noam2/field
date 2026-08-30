@@ -1,16 +1,16 @@
 import type { Outcome, TranscriptAnalysis } from './types'
 
 const CONTACT_RE =
-  /\b(?:instagram|\big\b|snap(?:chat)?|whatsapp|my number|your number|phone number|email)\b|\b[\w.+-]+@[\w.-]+\.\w{2,}\b|@[a-z0-9._]{2,30}\b|\b(?:\+?\d{1,3}[-.\s])?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b|\b\d{10,15}\b/i
+  /\b(?:instagram|\big\b|snap(?:chat)?|whatsapp|my number|your number|phone number|email)\b|\b[\w.+-]+@[\w.-]+\.\w{2,}\b|@[a-z0-9._]{2,30}\b|\b(?:\+?\d{1,3}[-.\s])?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b|\b\d{10,15}\b|וואצאפ|הואצאפ|וואטסאפ|נומר|מספר|אינסטגרם/i
 
 const SCHEDULE_RE =
-  /\b(?:tomorrow|tonight|this weekend|friday|saturday|sunday|coffee|drink|date|call me)\b/i
+  /\b(?:tomorrow|tonight|this weekend|friday|saturday|sunday|coffee|drink|date|call me)\b|מחר|היום בערב|קופי|שבת/i
 
 const CHAT_RE =
   /\b(?:stay in touch|keep in touch|text you|message you|talk later|hit you up|reach out)\b/i
 
 const REJECT_RE =
-  /\b(?:gotta go|got to go|not interested|i have a boyfriend|i have a girlfriend|i(?:['’]m| am) seeing someone|no thanks|no thank you)\b/i
+  /\b(?:gotta go|got to go|not interested|i have a boyfriend|i have a girlfriend|i(?:['’]m| am) seeing someone|no thanks|no thank you)\b|לא מעוניין|יש לי חבר|לא תודה/i
 
 const COMMIT_RE = /\bi(?:['’]ll| will)\b|\blet['’]?s\b|\bwe should\b|\btext me\b|\bmeet\b/i
 
@@ -103,10 +103,15 @@ export function extractTopics(text: string): string[] {
 
 export function extractIntroName(text: string): string | null {
   const m = text.match(/\b(?:i(?:['’]m| am)|my name is)\s+([a-z]{2,20})\b/i)
-  if (!m) return null
-  const raw = m[1]
-  if (NAME_SKIP.has(raw.toLowerCase())) return null
-  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
+  if (m) {
+    const raw = m[1]
+    if (!NAME_SKIP.has(raw.toLowerCase())) {
+      return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
+    }
+  }
+  const he = text.match(/(?:אני|קוראים לי)\s+([\u0590-\u05FF]{2,20})/)
+  if (he) return he[1]
+  return null
 }
 
 export function tomorrowIso(now = new Date()): string {

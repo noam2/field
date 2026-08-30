@@ -1,3 +1,4 @@
+import { whisperLanguage } from './lang'
 import { getApiKey, openaiHeaders } from './openai'
 
 const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions'
@@ -17,7 +18,8 @@ async function postTranscription(file: File, model: string): Promise<Response> {
   const form = new FormData()
   form.append('file', file)
   form.append('model', model)
-  form.append('language', 'en')
+  const lang = whisperLanguage()
+  if (lang) form.append('language', lang)
   form.append('response_format', 'text')
   return fetch(TRANSCRIBE_URL, {
     method: 'POST',

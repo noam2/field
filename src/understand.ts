@@ -1,5 +1,15 @@
 import { getApiKey, openaiHeaders } from './openai'
-import type { Energy, Insight, Outcome, Sentiment, UnderstandContext } from './types'
+import type {
+  Daypart,
+  Energy,
+  Insight,
+  Outcome,
+  PlaceType,
+  Sentiment,
+  SpokenLanguage,
+  UnderstandContext,
+} from './types'
+import { DAYPARTS, PLACE_TYPES, SPOKEN_LANGUAGES } from './types'
 
 const COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions'
 export const UNDERSTAND_MODEL = 'gpt-4o-mini'
@@ -7,6 +17,8 @@ export const UNDERSTAND_MODEL = 'gpt-4o-mini'
 const SENTIMENTS: Sentiment[] = ['positive', 'mixed', 'negative', 'neutral']
 const ENERGIES: Energy[] = ['low', 'medium', 'high']
 const OUTCOMES: Outcome[] = ['number', 'chat', 'date', 'talked', 'no', 'other']
+
+export type ProofResult = { language: SpokenLanguage; text: string }
 
 export const INSIGHT_JSON_SCHEMA = {
   type: 'object',
@@ -27,6 +39,9 @@ export const INSIGHT_JSON_SCHEMA = {
     exchangedContact: { type: 'boolean' },
     scheduled: { type: 'boolean' },
     rejection: { type: 'boolean' },
+    placeType: { type: 'string', enum: PLACE_TYPES },
+    daypart: { type: 'string', enum: DAYPARTS },
+    language: { type: 'string', enum: SPOKEN_LANGUAGES },
   },
   required: [
     'sentiment',
@@ -44,17 +59,39 @@ export const INSIGHT_JSON_SCHEMA = {
     'exchangedContact',
     'scheduled',
     'rejection',
+    'placeType',
+    'daypart',
+    'language',
   ],
 } as const
 
 const SYSTEM_PROMPT = [
   'You analyze a consented study-session conversation between enrolled participants.',
+  'The transcript may be Hebrew, English, or mixed (code-switching). Handle all three.',
   'Extract structured fields only from the transcript. Do not invent facts.',
+  'Extract names in Hebrew and English (e.g. Maya, Noa).',
+  'Contact signals include Instagram, WhatsApp, phone numbers, email, AND Hebrew: WhatsApp transliterations, phone-number words, Instagram transliterations.',
+  'Schedule signals include tomorrow, tonight, coffee, AND Hebrew: tomorrow, this evening, coffee, Saturday.',
+  'Rejection signals include not interested, I have a boyfriend, AND Hebrew: not interested, I have a boyfriend/friend, no thanks.',
+  'Treat Hebrew contact/schedule words as signals too: וואצאפ, נומר, אינסטגרם, קופי, מחר.',
+  'Treat Hebrew rejection phrases: לא מעוניין, יש לי חבר, לא תודה.',
+  'Write summary and followUpSuggestion in the same language as the majority of the transcript.',
   'If the transcript is empty, sentiment is neutral, success is false, and summary says no speech was captured.',
   'success is true only when contact was exchanged OR a meetup was scheduled, and the conversation is not a rejection.',
   'valence is a number from -1 (very negative) to 1 (very positive).',
   'summary is 1-2 sentences written from the transcript.',
   'followUpSuggestion is a short next step or null if none.',
+  'placeType is the venue category.',
+  'daypart is morning, afternoon, evening, or night.',
+  'language is he, en, or mixed based on the transcript.',
+].join(' ')
+
+const PROOF_PROMPT = [
+  'You proofread automatic speech-recognition transcripts.',
+  'The text may be Hebrew, English, or mixed (code-switching).',
+  'Fix punctuation and obvious ASR errors only.',
+  'Do not change meaning, names, numbers, or facts.',
+  'Return JSON with keys language (he, en, or mixed) and text (the corrected transcript).',
 ].join(' ')
 
 function stringList(value: unknown): string[] | null {
@@ -80,7 +117,18 @@ export function emptyInsight(model = UNDERSTAND_MODEL): Insight {
     scheduled: false,
     rejection: false,
     model,
+    placeType: 'other',
+    daypart: 'afternoon',
+    language: 'en',
   }
+}
+
+export function parseProofJson(raw: unknown): ProofResult | null {
+  if (!raw || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown>
+  if (v.language !== 'he' && v.language !== 'en' && v.language !== 'mixed') return null
+  if (typeof v.text !== 'string') return null
+  return { language: v.language, text: v.text }
 }
 
 export function parseInsightJson(raw: unknown): Insight | null {
@@ -107,6 +155,18 @@ export function parseInsightJson(raw: unknown): Insight | null {
   if (typeof v.scheduled !== 'boolean') return null
   if (typeof v.rejection !== 'boolean') return null
   const model = typeof v.model === 'string' ? v.model : ''
+  const placeType =
+    typeof v.placeType === 'string' && PLACE_TYPES.includes(v.placeType as PlaceType)
+      ? (v.placeType as PlaceType)
+      : undefined
+  const daypart =
+    typeof v.daypart === 'string' && DAYPARTS.includes(v.daypart as Daypart)
+      ? (v.daypart as Daypart)
+      : undefined
+  const language =
+    typeof v.language === 'string' && SPOKEN_LANGUAGES.includes(v.language as SpokenLanguage)
+      ? (v.language as SpokenLanguage)
+      : undefined
   return {
     sentiment: v.sentiment as Sentiment,
     success: v.success,
@@ -124,6 +184,9 @@ export function parseInsightJson(raw: unknown): Insight | null {
     scheduled: v.scheduled,
     rejection: v.rejection,
     model,
+    placeType,
+    daypart,
+    language,
   }
 }
 
@@ -142,6 +205,34 @@ function parseMessageContent(content: unknown): unknown {
       return null
     }
   }
+}
+
+export async function proofTranscript(text: string): Promise<ProofResult> {
+  const transcript = (text ?? '').trim()
+  if (!transcript) return { language: 'en', text: '' }
+  if (!getApiKey()) throw new Error('No OpenAI key')
+  const res = await fetch(COMPLETIONS_URL, {
+    method: 'POST',
+    headers: {
+      ...openaiHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: UNDERSTAND_MODEL,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: PROOF_PROMPT },
+        { role: 'user', content: transcript },
+      ],
+    }),
+  })
+  if (!res.ok) throw new Error('Proofing failed')
+  const json = (await res.json()) as {
+    choices?: { message?: { content?: unknown } }[]
+  }
+  const parsed = parseProofJson(parseMessageContent(json.choices?.[0]?.message?.content))
+  if (!parsed) throw new Error('Invalid proof')
+  return parsed
 }
 
 export async function understandTranscript(text: string, ctx: UnderstandContext): Promise<Insight> {
