@@ -11,14 +11,14 @@ export function Log({ approaches }: Props) {
   const rt = getSessionRuntime()
   const snap = useSyncExternalStore(rt.subscribe, rt.getSnapshot, rt.getSnapshot)
   const [now, setNow] = useState(() => Date.now())
-  const [busy, setBusy] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
+  const recordingUi = snap.phase === 'starting' || snap.phase === 'live'
 
   useEffect(() => {
-    if (!snap.live) return
+    if (!recordingUi) return
     const id = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(id)
-  }, [snap.live])
+  }, [recordingUi])
 
   useEffect(() => {
     const el = scroller.current
@@ -32,28 +32,40 @@ export function Log({ approaches }: Props) {
   const place =
     snap.place || (snap.lat != null && snap.lng != null ? formatCoordPlace(snap.lat, snap.lng) : '—')
 
-  async function start() {
-    setBusy(true)
-    try {
-      await getSessionRuntime().start()
-    } finally {
-      setBusy(false)
-    }
+  async function retryStart() {
+    await getSessionRuntime().start()
   }
 
   async function toggle() {
-    setBusy(true)
-    try {
-      if (!snap.live) await getSessionRuntime().start()
-      else await getSessionRuntime().stop()
-    } finally {
-      setBusy(false)
-    }
+    const cur = getSessionRuntime().getSnapshot()
+    if (cur.phase === 'idle') await getSessionRuntime().start()
+    else if (cur.phase === 'live' || cur.phase === 'starting') await getSessionRuntime().stop()
   }
 
+  const recClass =
+    snap.phase === 'starting'
+      ? 'rec-btn is-live is-starting'
+      : snap.phase === 'live'
+        ? 'rec-btn is-live'
+        : 'rec-btn'
+
+  const recAria =
+    snap.phase === 'live'
+      ? 'Stop recording'
+      : snap.phase === 'starting'
+        ? 'Starting recording'
+        : 'Start recording'
+
+  const caption =
+    snap.phase === 'live'
+      ? 'Tap to stop'
+      : snap.phase === 'starting'
+        ? 'Allow microphone access'
+        : 'Tap to record.'
+
   return (
-    <div className="screen log">
-      {!snap.live && <InstallCard />}
+    <div className={recordingUi ? 'screen log is-recording' : 'screen log'}>
+      {snap.phase === 'idle' && <InstallCard />}
       {snap.error && (
         <div className="error-banner" role="alert">
           <p>{snap.error}</p>
@@ -62,7 +74,7 @@ export function Log({ approaches }: Props) {
             className="btn-secondary"
             onClick={() => {
               if (snap.live) getSessionRuntime().retry()
-              else void start()
+              else void retryStart()
             }}
           >
             Retry
@@ -70,26 +82,38 @@ export function Log({ approaches }: Props) {
         </div>
       )}
 
+      {recordingUi && (
+        <div className="rec-banner" role="status">
+          <span className="rec-dot" aria-hidden="true" />
+          <div className="rec-copy">
+            <span className="rec-title">REC ON</span>
+            <span className="rec-banner-time">{elapsed}</span>
+          </div>
+        </div>
+      )}
+
       <div className="rec-stage">
         <button
           type="button"
-          className={snap.live ? 'rec-btn is-live' : 'rec-btn'}
-          disabled={busy}
-          aria-pressed={snap.live}
-          aria-label={snap.live ? 'Stop recording' : 'Start recording'}
+          className={recClass}
+          disabled={snap.phase === 'starting'}
+          aria-pressed={recordingUi}
+          aria-label={recAria}
           onClick={() => void toggle()}
         >
-          {snap.live ? (
+          {snap.phase === 'idle' ? (
+            <span className="rec-btn-label">Record</span>
+          ) : (
             <>
               <span className="rec-dot" aria-hidden="true" />
-              <span className="rec-btn-label">Recording</span>
-              <span className="rec-btn-time">{elapsed}</span>
+              <span className="rec-btn-label">
+                {snap.phase === 'starting' ? 'Starting…' : 'Recording'}
+              </span>
+              {snap.phase === 'live' && <span className="rec-btn-time">{elapsed}</span>}
             </>
-          ) : (
-            <span className="rec-btn-label">Record</span>
           )}
         </button>
-        {!snap.live && <p className="rec-caption">Tap to record. Enrolled study session.</p>}
+        <p className="rec-caption">{caption}</p>
       </div>
 
       {snap.live && (
@@ -117,7 +141,20 @@ export function Log({ approaches }: Props) {
             </p>
           </div>
           <div ref={scroller} className="transcript-live is-compact" aria-live="polite" dir="auto">
-            {liveText || <span className="muted">Listening…</span>}
+            {liveText ? (
+              liveText
+            ) : (
+              <span className="listen-row">
+                <span className="listening-pulse">Listening…</span>
+                <span className="mic-on">Mic on</span>
+                <span className="mic-level" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </span>
+            )}
           </div>
         </div>
       )}

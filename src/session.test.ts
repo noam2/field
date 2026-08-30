@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from './db'
 import { setApiKey } from './openai'
+import { setToastListener } from './toast'
 import {
+  IDLE_STOP_MS,
   SessionRuntime,
   pickRecorderMime,
   resetSessionRuntime,
+  shouldIdleStop,
   shouldSplitConversation,
   SILENCE_MS,
   startKeepAlive,
@@ -42,6 +45,24 @@ describe('shouldSplitConversation', () => {
 
   it('SILENCE_MS is 60000', () => {
     expect(SILENCE_MS).toBe(60_000)
+  })
+})
+
+describe('shouldIdleStop', () => {
+  it('IDLE_STOP_MS is 600000', () => {
+    expect(IDLE_STOP_MS).toBe(600_000)
+  })
+
+  it('9:59 is false and 10:00 is true from start with no speech', () => {
+    expect(shouldIdleStop(null, 0, IDLE_STOP_MS - 1)).toBe(false)
+    expect(shouldIdleStop(null, 0, IDLE_STOP_MS)).toBe(true)
+  })
+
+  it('speech at t=1min means stop at t=11min not t=10', () => {
+    const start = 0
+    const speech = 60_000
+    expect(shouldIdleStop(speech, start, 10 * 60 * 1000)).toBe(false)
+    expect(shouldIdleStop(speech, start, 11 * 60 * 1000)).toBe(true)
   })
 })
 
@@ -96,12 +117,15 @@ describe('SessionRuntime', () => {
     })
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(rt.getSnapshot().live).toBe(false)
+    expect(rt.getSnapshot().phase).toBe('idle')
     expect(rt.getSnapshot().recording).toBe(false)
     await rt.start()
     expect(getUserMedia).toHaveBeenCalledTimes(1)
     expect(rt.getSnapshot().live).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('live')
     expect(rt.getSnapshot().recording).toBe(true)
     await rt.stop()
+    expect(rt.getSnapshot().phase).toBe('idle')
   })
 
   it('writes a conversation on stop after speech', async () => {
@@ -203,5 +227,106 @@ describe('SessionRuntime', () => {
     expect(row?.insight?.who).toBe('Maya')
     expect(row?.insight?.success).toBe(true)
     vi.unstubAllGlobals()
+  })
+
+  it('emits phase starting before getUserMedia resolves, then live', async () => {
+    let resolveGum!: (stream: MediaStream) => void
+    const gumPromise = new Promise<MediaStream>((resolve) => {
+      resolveGum = resolve
+    })
+    const getUserMedia = vi.fn(() => gumPromise)
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const started = rt.start()
+    expect(rt.getSnapshot().phase).toBe('starting')
+    expect(rt.getSnapshot().live).toBe(false)
+    resolveGum(fakeStream())
+    await started
+    expect(rt.getSnapshot().phase).toBe('live')
+    expect(rt.getSnapshot().live).toBe(true)
+    await rt.stop()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+  })
+
+  it('returns to idle with error when getUserMedia fails', async () => {
+    const getUserMedia = vi.fn(async () => {
+      throw new Error('denied')
+    })
+    const rt = new SessionRuntime({
+      getUserMedia,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(rt.getSnapshot().error).toMatch(/permission/i)
+  })
+
+  function runtime(now: () => number) {
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    return new SessionRuntime({
+      now,
+      getUserMedia: vi.fn(async () => fakeStream()),
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+  }
+
+  it('idle-stops after 10 minutes with no speech from start', async () => {
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    let now = 1_000
+    const rt = runtime(() => now)
+    await rt.start()
+    expect(rt.getSnapshot().phase).toBe('live')
+    now = 1_000 + IDLE_STOP_MS - 1
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().phase).toBe('live')
+    now = 1_000 + IDLE_STOP_MS
+    expect(await rt.checkIdleStop(now)).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(toasts).toContain('Stopped — no speech for 10 minutes.')
+    setToastListener(null)
+  })
+
+  it('speech at 1min defers idle-stop to 11min; split does not reset the idle clock', async () => {
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    let now = 0
+    const rt = runtime(() => now)
+    await rt.start()
+    expect(rt.getSnapshot().phase).toBe('live')
+    now = 60_000
+    rt.ingestSpeech('hello there how is the week going for you today really?', true, now)
+    now = SILENCE_MS + 60_000
+    expect(rt.checkSilence(now)).toBe(true)
+    await rt.waitForBackground()
+    expect(rt.getSnapshot().phase).toBe('live')
+    now = 10 * 60 * 1000
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().phase).toBe('live')
+    now = 11 * 60 * 1000
+    expect(await rt.checkIdleStop(now)).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(rt.getSnapshot().live).toBe(false)
+    expect(toasts).toContain('Stopped — no speech for 10 minutes.')
+    await rt.start()
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+    expect(rt.getSnapshot().phase).toBe('idle')
+    setToastListener(null)
   })
 })

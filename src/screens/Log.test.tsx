@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db'
-import { setSessionTestDeps } from '../session'
+import { getSessionRuntime, setSessionTestDeps } from '../session'
 import { Log } from './Log'
 
 class FakeRecorder {
@@ -20,6 +20,17 @@ class FakeRecorder {
 
 function fakeStream(): MediaStream {
   return { getTracks: () => [{ stop() {} }] } as unknown as MediaStream
+}
+
+function deferredGum() {
+  let resolveGum!: (stream: MediaStream) => void
+  const promise = new Promise<MediaStream>((resolve) => {
+    resolveGum = resolve
+  })
+  return {
+    getUserMedia: vi.fn(() => promise),
+    resolve: () => resolveGum(fakeStream()),
+  }
 }
 
 beforeEach(async () => {
@@ -41,9 +52,10 @@ describe('Log', () => {
     })
     render(<Log approaches={[]} />)
     expect(screen.getByRole('button', { name: /start recording/i })).toBeInTheDocument()
-    expect(screen.getByText(/tap to record\. enrolled study session/i)).toBeInTheDocument()
+    expect(screen.getByText(/tap to record/i)).toBeInTheDocument()
     expect(screen.queryByText(/start session/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/stop session/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/rec on/i)).not.toBeInTheDocument()
     expect(getUserMedia).not.toHaveBeenCalled()
   })
 
@@ -74,5 +86,55 @@ describe('Log', () => {
     expect(screen.queryByText(/start session/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/stop session/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/session live/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/rec on/i)).toBeInTheDocument()
+    expect(screen.getByText(/tap to stop/i)).toBeInTheDocument()
+  })
+
+  it('shows Starting or REC ON before getUserMedia resolves', async () => {
+    const gum = deferredGum()
+    setSessionTestDeps({
+      getUserMedia: gum.getUserMedia,
+      MediaRecorder: FakeRecorder as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const user = userEvent.setup()
+    const { container } = render(<Log approaches={[]} />)
+    await user.click(screen.getByRole('button', { name: /start recording/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/starting/i).textContent || screen.getByText(/rec on/i)).toBeTruthy()
+    })
+    expect(screen.getByText(/rec on/i)).toBeInTheDocument()
+    expect(screen.getByText(/starting/i)).toBeInTheDocument()
+    expect(container.querySelector('.log.is-recording')).toBeTruthy()
+    expect(container.querySelector('.rec-btn.is-live')).toBeTruthy()
+    expect(screen.queryByText(/^record$/i)).not.toBeInTheDocument()
+    gum.resolve()
+    expect(await screen.findByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+    expect(screen.getByText(/listening/i)).toBeInTheDocument()
+    expect(screen.getByText(/mic on/i)).toBeInTheDocument()
+  })
+
+  it('stop returns to idle Record, not stuck starting or disabled', async () => {
+    const getUserMedia = vi.fn(async () => fakeStream())
+    setSessionTestDeps({
+      getUserMedia,
+      MediaRecorder: FakeRecorder as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    const user = userEvent.setup()
+    const { container } = render(<Log approaches={[]} />)
+    await user.click(screen.getByRole('button', { name: /start recording/i }))
+    const stopBtn = await screen.findByRole('button', { name: /stop recording/i })
+    await user.click(stopBtn)
+    const startBtn = await screen.findByRole('button', { name: /start recording/i })
+    expect(startBtn).toBeEnabled()
+    expect(startBtn).toHaveTextContent(/^record$/i)
+    expect(screen.getByText(/tap to record/i)).toBeInTheDocument()
+    expect(screen.queryByText(/rec on/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/starting/i)).not.toBeInTheDocument()
+    expect(container.querySelector('.log.is-recording')).toBeFalsy()
+    expect(getSessionRuntime().getSnapshot().phase).toBe('idle')
   })
 })

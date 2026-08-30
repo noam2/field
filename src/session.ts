@@ -10,6 +10,7 @@ import { formatCoordPlace, nowISO } from './utils'
 import type { Approach, SpokenLanguage, UnderstandContext } from './types'
 
 export const SILENCE_MS = 60_000
+export const IDLE_STOP_MS = 10 * 60 * 1000
 export const PING_THROTTLE_MS = 10_000
 export const RECORDER_MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
@@ -26,8 +27,11 @@ export type Ping = {
   at: number
 }
 
+export type SessionPhase = 'idle' | 'starting' | 'live'
+
 export type SessionSnapshot = {
   live: boolean
+  phase: SessionPhase
   recording: boolean
   sessionId: string | null
   startedAtMs: number | null
@@ -180,6 +184,17 @@ export function shouldSplitConversation(
   return now - lastSpeechAt >= gapMs
 }
 
+export function shouldIdleStop(
+  lastSpeechAt: number | null,
+  startedAtMs: number | null,
+  now: number,
+  idleMs = IDLE_STOP_MS,
+): boolean {
+  const last = lastSpeechAt ?? startedAtMs
+  if (last == null) return false
+  return now - last >= idleMs
+}
+
 export function pickRecorderMime(
   isTypeSupported: (mime: string) => boolean = (mime) => {
     const ctor = (
@@ -256,6 +271,7 @@ function getSpeechCtor(override?: SpeechCtor | null): SpeechCtor | null {
 
 const emptySnapshot = (): SessionSnapshot => ({
   live: false,
+  phase: 'idle',
   recording: false,
   sessionId: null,
   startedAtMs: null,
@@ -285,7 +301,11 @@ export class SessionRuntime {
   private wake: { release: () => Promise<void> } | null = null
   private visibilityBound = false
   private silenceTimer: ReturnType<typeof setTimeout> | null = null
+  private idleTimer: ReturnType<typeof setInterval> | null = null
   private lastSpeechAt: number | null = null
+  private lastActivityAt: number | null = null
+  private idleStopping = false
+  private startGen = 0
   private lastPingAt = 0
   private convId: string | null = null
   private convStartedMs: number | null = null
@@ -338,21 +358,29 @@ export class SessionRuntime {
   }
 
   async start(): Promise<void> {
-    if (this.snapshot.live) return
-    this.emit({ error: null })
+    if (this.snapshot.live || this.snapshot.phase === 'starting') return
+    const gen = ++this.startGen
+    this.emit({ phase: 'starting', error: null })
     const gum =
       this.deps.getUserMedia ??
       navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices)
     if (!gum) {
-      this.emit({ error: 'Microphone is not available on this device.' })
+      this.emit({ phase: 'idle', live: false, error: 'Microphone is not available on this device.' })
       return
     }
     try {
       this.stream = await gum({ audio: true, video: false })
     } catch {
+      if (gen !== this.startGen) return
       this.emit({
+        phase: 'idle',
+        live: false,
         error: 'Microphone permission denied. Enable the mic and retry.',
       })
+      return
+    }
+    if (gen !== this.startGen) {
+      this.stopStream()
       return
     }
 
@@ -360,11 +388,18 @@ export class SessionRuntime {
     const startedAt = nowISO()
     const startedAtMs = this.now()
     await db.sessions.add({ id, startedAt, endedAt: null })
+    if (gen !== this.startGen) {
+      this.stopStream()
+      await db.sessions.update(id, { endedAt: nowISO() })
+      return
+    }
 
     this.finalTranscript = ''
     this.chunks = []
     this.conversationCountReset()
     this.lastSpeechAt = null
+    this.lastActivityAt = null
+    this.idleStopping = false
     this.convId = null
     this.convStartedMs = null
     this.mime = pickRecorderMime()
@@ -376,6 +411,7 @@ export class SessionRuntime {
     const speechAvailable = Boolean(speechCtor)
     this.emit({
       live: true,
+      phase: 'live',
       recording: false,
       sessionId: id,
       startedAtMs,
@@ -400,6 +436,7 @@ export class SessionRuntime {
     void this.acquireWakeLock()
     this.bindVisibility()
     this.startEnergyMonitor()
+    this.startIdleWatch()
     if (getKeepAlive()) startKeepAlive()
   }
 
@@ -408,9 +445,16 @@ export class SessionRuntime {
   }
 
   async stop(): Promise<void> {
+    if (this.snapshot.phase === 'starting' && !this.snapshot.live && !this.snapshot.sessionId) {
+      this.startGen += 1
+      this.stopStream()
+      this.emit({ phase: 'idle', live: false, recording: false, error: null })
+      return
+    }
     if (!this.snapshot.live && !this.snapshot.sessionId) return
     this.wantRecognition = false
     this.clearSilenceTimer()
+    this.clearIdleWatch()
     this.stopRecognition()
     this.clearWatch()
     await this.closeConversation()
@@ -425,6 +469,7 @@ export class SessionRuntime {
     }
     this.emit({
       live: false,
+      phase: 'idle',
       recording: false,
       transcript: '',
       interim: '',
@@ -446,8 +491,7 @@ export class SessionRuntime {
     if (!this.snapshot.live) return
     const piece = text.trim()
     if (!piece) return
-    this.lastSpeechAt = at
-    this.scheduleSilenceCheck()
+    this.markActivity(at)
     if (!this.convId) this.beginConversation()
     if (isFinal) {
       this.finalTranscript = `${this.finalTranscript} ${piece}`.replace(/\s+/g, ' ').trim()
@@ -488,9 +532,24 @@ export class SessionRuntime {
     return true
   }
 
+  async checkIdleStop(at = this.now()): Promise<boolean> {
+    if (!this.snapshot.live || this.idleStopping) return false
+    if (!shouldIdleStop(this.lastActivityAt, this.snapshot.startedAtMs, at)) return false
+    this.idleStopping = true
+    try {
+      await this.stop()
+      toast('Stopped — no speech for 10 minutes.')
+      return true
+    } finally {
+      this.idleStopping = false
+    }
+  }
+
   dispose(): void {
+    this.startGen += 1
     this.wantRecognition = false
     this.clearSilenceTimer()
+    this.clearIdleWatch()
     this.stopRecognition()
     this.clearWatch()
     try {
@@ -745,8 +804,7 @@ export class SessionRuntime {
       rec.interimResults = true
       rec.lang = speechRecognitionLang()
       rec.onresult = (ev) => {
-        this.lastSpeechAt = this.now()
-        this.scheduleSilenceCheck()
+        this.markActivity()
         let interim = ''
         let finals = ''
         for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
@@ -851,6 +909,12 @@ export class SessionRuntime {
     this.stream = null
   }
 
+  private markActivity(at = this.now()): void {
+    this.lastSpeechAt = at
+    this.lastActivityAt = at
+    this.scheduleSilenceCheck()
+  }
+
   private scheduleSilenceCheck(): void {
     this.clearSilenceTimer()
     this.silenceTimer = setTimeout(() => {
@@ -862,6 +926,20 @@ export class SessionRuntime {
     if (this.silenceTimer != null) {
       clearTimeout(this.silenceTimer)
       this.silenceTimer = null
+    }
+  }
+
+  private startIdleWatch(): void {
+    this.clearIdleWatch()
+    this.idleTimer = setInterval(() => {
+      void this.checkIdleStop()
+    }, 5_000)
+  }
+
+  private clearIdleWatch(): void {
+    if (this.idleTimer != null) {
+      clearInterval(this.idleTimer)
+      this.idleTimer = null
     }
   }
 
@@ -964,8 +1042,7 @@ export class SessionRuntime {
       for (let i = 0; i < buf.length; i += 1) sum += buf[i] * buf[i]
       const rms = Math.sqrt(sum / buf.length)
       if (rms > 0.04) {
-        this.lastSpeechAt = this.now()
-        this.scheduleSilenceCheck()
+        this.markActivity()
         if (!this.convId) this.beginConversation()
       }
     } catch {
