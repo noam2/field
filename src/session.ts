@@ -14,6 +14,15 @@ export const SILENCE_MS = 60_000
 export const IDLE_STOP_MS = 10 * 60 * 1000
 export const PING_THROTTLE_MS = 10_000
 export const GUM_TIMEOUT_MS = 8_000
+/** Collapse pageshow + visibilitychange into one resume. */
+export const RESUME_DEBOUNCE_MS = 300
+export const SPEECH_RETRY_MAX = 5
+export const SPEECH_RETRY_FIRST_MS = 400
+export const SPEECH_RETRY_NEXT_MS = 1_000
+export const SPEECH_NOTE_DENIED = 'Speech permission denied. Audio is still recorded.'
+export const SPEECH_NOTE_CAPTIONS_PAUSED = 'Live captions paused. Audio is still recorded.'
+export const RESUME_NOTE_CONTINUED = 'Recording continued while you were away.'
+export const RESUME_NOTE_RESTARTED = 'Back — recording on'
 /** One-line idle error when the site mic permission is blocked or getUserMedia hangs. */
 export const MIC_BLOCKED_ERROR = 'Mic is blocked in Chrome site settings.'
 export const RECORDER_MIME_CANDIDATES = [
@@ -78,6 +87,8 @@ type RecorderLike = {
   onstop: (() => void) | null
   start: (timeslice?: number) => void
   stop: () => void
+  pause?: () => void
+  resume?: () => void
 }
 
 type RecorderCtor = {
@@ -188,6 +199,23 @@ function applyMediaSession(state: 'playing' | 'none'): void {
     ms.playbackState = state
   } catch {
     /* optional */
+  }
+}
+
+/** Resume oscillator/element without tearing them down — used while hidden. */
+export function resumeKeepAlive(): void {
+  try {
+    void keepOsc?.ctx.resume?.()
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (keepAudio) {
+      const play = keepAudio.play()
+      if (play && typeof play.catch === 'function') void play.catch(() => {})
+    }
+  } catch {
+    /* ignore */
   }
 }
 
@@ -358,8 +386,11 @@ export class SessionRuntime {
   private geoClass: string | null = null
   private hiddenWhileLive = false
   private pageshowBound = false
+  private resumeTimer: ReturnType<typeof setTimeout> | null = null
+  private speechRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private speechRetryCount = 0
   private deadMicTimer: ReturnType<typeof setTimeout> | null = null
-  private captureResumeInFlight = false
+  private captureResumeWait: Promise<void> | null = null
   private energyTimer: ReturnType<typeof setInterval> | null = null
   private gumTimer: ReturnType<typeof setTimeout> | null = null
   private analyser: AnalyserNode | null = null
@@ -390,6 +421,10 @@ export class SessionRuntime {
 
   isLive(): boolean {
     return this.snapshot.live
+  }
+
+  wantsRecognition(): boolean {
+    return this.wantRecognition
   }
 
   private emit(patch: Partial<SessionSnapshot>): void {
@@ -486,6 +521,9 @@ export class SessionRuntime {
     this.geoType = null
     this.geoClass = null
     this.hiddenWhileLive = false
+    this.speechRetryCount = 0
+    this.clearSpeechRetry()
+    this.clearResumeTimer()
 
     const speechCtor = getSpeechCtor(this.deps.SpeechRecognition)
     const speechAvailable = Boolean(speechCtor)
@@ -539,6 +577,8 @@ export class SessionRuntime {
     this.clearSilenceTimer()
     this.clearIdleWatch()
     this.clearDeadMicTimer()
+    this.clearResumeTimer()
+    this.clearSpeechRetry()
     this.stopRecognition()
     this.clearWatch()
     await this.closeConversation()
@@ -646,6 +686,8 @@ export class SessionRuntime {
     this.clearSilenceTimer()
     this.clearIdleWatch()
     this.clearDeadMicTimer()
+    this.clearResumeTimer()
+    this.clearSpeechRetry()
     this.stopRecognition()
     this.clearWatch()
     try {
@@ -675,7 +717,7 @@ export class SessionRuntime {
     this.startRecorder()
   }
 
-  private startRecorder(): void {
+  private startRecorder(keepChunks = false): void {
     const stream = this.stream
     if (!stream) return
     const Rec =
@@ -699,7 +741,7 @@ export class SessionRuntime {
         return
       }
     }
-    this.chunks = []
+    if (!keepChunks) this.chunks = []
     this.recorder.ondataavailable = (ev) => {
       if (ev.data && ev.data.size > 0) this.chunks.push(ev.data)
     }
@@ -708,7 +750,7 @@ export class SessionRuntime {
     }
     try {
       this.recorder.start(1000)
-      this.emit({ recording: true })
+      this.emit({ recording: this.recorder.state === 'recording' })
     } catch {
       this.emit({ recording: false, error: 'Could not start the audio recorder.' })
     }
@@ -890,48 +932,73 @@ export class SessionRuntime {
     }
   }
 
+  private isDocumentVisible(): boolean {
+    try {
+      return typeof document === 'undefined' || document.visibilityState === 'visible'
+    } catch {
+      return true
+    }
+  }
+
   private startRecognition(): void {
     const Ctor = getSpeechCtor(this.deps.SpeechRecognition)
     if (!Ctor) return
     this.wantRecognition = true
+    if (!this.isDocumentVisible()) return
     if (this.recognition) return
+    let rec: SpeechRecLike
     try {
-      const rec = new Ctor()
-      rec.continuous = true
-      rec.interimResults = true
-      rec.lang = speechRecognitionLang()
-      rec.onresult = (ev) => {
-        this.markActivity()
-        let interim = ''
-        let finals = ''
-        for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
-          const piece = ev.results[i]
-          const t = piece[0]?.transcript ?? ''
-          if (piece.isFinal) finals += ` ${t}`
-          else interim += ` ${t}`
-        }
-        if (finals.trim()) this.ingestSpeech(finals, true)
-        else if (interim.trim()) this.ingestSpeech(interim, false)
+      rec = new Ctor()
+    } catch {
+      this.emit({
+        speechNote: 'Live transcript needs Chrome. Audio is still being recorded.',
+        speechAvailable: false,
+      })
+      return
+    }
+    rec.continuous = true
+    rec.interimResults = true
+    rec.lang = speechRecognitionLang()
+    rec.onresult = (ev) => {
+      this.speechRetryCount = 0
+      this.clearSpeechRetry()
+      if (this.snapshot.speechNote || this.snapshot.resumeNote) {
+        this.emit({ speechNote: null, resumeNote: null })
       }
-      rec.onend = () => {
-        this.recognition = null
-        if (this.wantRecognition && this.snapshot.live) {
-          window.setTimeout(() => this.startRecognition(), 250)
-        }
+      this.markActivity()
+      let interim = ''
+      let finals = ''
+      for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+        const piece = ev.results[i]
+        const t = piece[0]?.transcript ?? ''
+        if (piece.isFinal) finals += ` ${t}`
+        else interim += ` ${t}`
       }
-      rec.onerror = (ev) => {
-        if (ev.error === 'not-allowed') {
-          this.wantRecognition = false
-          this.emit({
-            speechNote: 'Speech permission denied. Audio is still recorded.',
-          })
-          return
-        }
-        if (ev.error === 'aborted') return
-      }
+      if (finals.trim()) this.ingestSpeech(finals, true)
+      else if (interim.trim()) this.ingestSpeech(interim, false)
+    }
+    rec.onend = () => {
+      if (this.recognition === rec) this.recognition = null
+      if (!this.wantRecognition || !this.snapshot.live) return
+      if (!this.isDocumentVisible() || this.speechRetryTimer != null) return
+      window.setTimeout(() => {
+        if (!this.wantRecognition || !this.snapshot.live || !this.isDocumentVisible()) return
+        this.startRecognition()
+      }, 250)
+    }
+    rec.onerror = (ev) => {
+      this.handleSpeechError(ev.error)
+    }
+    try {
       rec.start()
       this.recognition = rec
     } catch {
+      this.recognition = null
+      if (!this.isDocumentVisible()) return
+      if (!this.streamDead()) {
+        this.scheduleSpeechRetry()
+        return
+      }
       this.emit({
         speechNote: 'Live transcript needs Chrome. Audio is still being recorded.',
         speechAvailable: false,
@@ -939,14 +1006,61 @@ export class SessionRuntime {
     }
   }
 
-  private stopRecognition(): void {
+  private handleSpeechError(error: string): void {
+    if (error === 'aborted' || error === 'no-speech' || error === 'network') {
+      return
+    }
+    if (error !== 'not-allowed' && error !== 'service-not-allowed' && error !== 'audio-capture') {
+      return
+    }
+    this.recognition = null
+    if (!this.isDocumentVisible()) {
+      return
+    }
+    if (!this.streamDead()) {
+      this.scheduleSpeechRetry()
+      return
+    }
     this.wantRecognition = false
+    this.emit({ speechNote: SPEECH_NOTE_DENIED })
+  }
+
+  private scheduleSpeechRetry(): void {
+    if (this.speechRetryCount >= SPEECH_RETRY_MAX) {
+      this.emit({ speechNote: SPEECH_NOTE_CAPTIONS_PAUSED })
+      return
+    }
+    const delay = this.speechRetryCount === 0 ? SPEECH_RETRY_FIRST_MS : SPEECH_RETRY_NEXT_MS
+    this.speechRetryCount += 1
+    this.clearSpeechRetry()
+    this.speechRetryTimer = setTimeout(() => {
+      this.speechRetryTimer = null
+      if (!this.wantRecognition || !this.snapshot.live || !this.isDocumentVisible()) return
+      this.startRecognition()
+    }, delay)
+  }
+
+  private pauseRecognition(): void {
+    const rec = this.recognition
+    this.recognition = null
+    this.clearSpeechRetry()
     try {
-      this.recognition?.stop()
+      rec?.stop()
     } catch {
       /* ignore */
     }
+  }
+
+  private stopRecognition(): void {
+    this.wantRecognition = false
+    this.clearSpeechRetry()
+    const rec = this.recognition
     this.recognition = null
+    try {
+      rec?.stop()
+    } catch {
+      /* ignore */
+    }
   }
 
   private beginWatch(): void {
@@ -1069,13 +1183,41 @@ export class SessionRuntime {
     if (!this.snapshot.live) return
     if (document.visibilityState === 'hidden') {
       this.hiddenWhileLive = true
+      this.clearResumeTimer()
+      this.pauseRecognition()
+      // Audio capture and keep-alive MUST continue while minimized.
+      if (getKeepAlive()) resumeKeepAlive()
       return
     }
-    this.handleResume()
+    this.scheduleResume()
   }
 
   private onPageShow = (): void => {
-    if (this.snapshot.live) this.handleResume()
+    if (!this.snapshot.live) return
+    if (!this.isDocumentVisible()) return
+    this.scheduleResume()
+  }
+
+  private scheduleResume(): void {
+    this.clearResumeTimer()
+    this.resumeTimer = setTimeout(() => {
+      this.resumeTimer = null
+      void this.handleResume()
+    }, RESUME_DEBOUNCE_MS)
+  }
+
+  private clearResumeTimer(): void {
+    if (this.resumeTimer != null) {
+      clearTimeout(this.resumeTimer)
+      this.resumeTimer = null
+    }
+  }
+
+  private clearSpeechRetry(): void {
+    if (this.speechRetryTimer != null) {
+      clearTimeout(this.speechRetryTimer)
+      this.speechRetryTimer = null
+    }
   }
 
   private streamDead(): boolean {
@@ -1120,13 +1262,38 @@ export class SessionRuntime {
 
   private restartCapture(): void {
     if (!this.snapshot.live) return
-    if (this.convId) this.startRecorder()
+    const rec = this.recorder
+    if (rec && rec.state === 'paused') {
+      try {
+        rec.resume?.()
+      } catch {
+        /* fall through to a new recorder */
+      }
+    }
+    if (rec && rec.state === 'recording') {
+      this.emit({ recording: true })
+      return
+    }
+    if (this.convId) this.startRecorder(true)
     else this.beginConversation()
   }
 
   private async ensureCapture(): Promise<void> {
-    if (!this.snapshot.live || this.captureResumeInFlight) return
-    this.captureResumeInFlight = true
+    if (!this.snapshot.live) return
+    if (this.captureResumeWait) {
+      await this.captureResumeWait
+      return
+    }
+    const run = this.runEnsureCapture()
+    this.captureResumeWait = run
+    try {
+      await run
+    } finally {
+      this.captureResumeWait = null
+    }
+  }
+
+  private async runEnsureCapture(): Promise<void> {
     try {
       if (this.streamDead()) {
         const gum = this.gumFn()
@@ -1159,44 +1326,43 @@ export class SessionRuntime {
       if (!this.recorder || this.recorder.state !== 'recording') {
         this.restartCapture()
       }
-    } finally {
-      this.captureResumeInFlight = false
+    } catch {
+      /* restartCapture / gum errors already emitted */
     }
   }
 
-  private handleResume(): void {
+  private async handleResume(): Promise<void> {
     if (!this.snapshot.live) return
+    if (!this.isDocumentVisible()) return
     // Reset idle clock before any checkIdleStop from thawed timers.
     this.lastActivityAt = this.now()
     const wasHidden = this.hiddenWhileLive
-    const wasRecording = this.recorder?.state === 'recording'
+    const prevRecorder = this.recorder
+    const prevState = prevRecorder?.state
     this.hiddenWhileLive = false
+    this.speechRetryCount = 0
+    this.clearSpeechRetry()
     void this.acquireWakeLock()
     if (getKeepAlive()) startKeepAlive()
     applyMediaSession('playing')
-    void this.ensureCapture()
-    this.restartRecognition()
-    if (wasHidden) {
-      this.emit({
-        resumeNote: wasRecording
-          ? 'Recording continued while you were away.'
-          : 'Recording was interrupted. Audio may have stopped — keep Field on screen.',
-      })
+    await this.ensureCapture()
+    if (!this.snapshot.live || !this.isDocumentVisible()) return
+    const recordingNow = this.recorder?.state === 'recording'
+    this.emit({ recording: recordingNow })
+    if (recordingNow || !this.streamDead()) {
+      this.startRecognition()
     }
-  }
-
-  private restartRecognition(): void {
-    if (!this.snapshot.live) return
-    this.wantRecognition = true
-    if (this.recognition) {
-      try {
-        this.recognition.stop()
-      } catch {
-        /* onend restarts */
-      }
+    if (!wasHidden) return
+    if (!recordingNow) {
+      this.emit({ recording: false, resumeNote: null })
       return
     }
-    this.startRecognition()
+    const continued =
+      this.recorder === prevRecorder && (prevState === 'recording' || prevState === 'paused')
+    this.emit({
+      recording: true,
+      resumeNote: continued ? RESUME_NOTE_CONTINUED : RESUME_NOTE_RESTARTED,
+    })
   }
 
   private bindVisibility(): void {
@@ -1211,6 +1377,7 @@ export class SessionRuntime {
   }
 
   private unbindVisibility(): void {
+    this.clearResumeTimer()
     if (this.visibilityBound) {
       document.removeEventListener('visibilitychange', this.onVisibility)
       this.visibilityBound = false

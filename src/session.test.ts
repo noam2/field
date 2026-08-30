@@ -6,6 +6,14 @@ import {
   GUM_TIMEOUT_MS,
   IDLE_STOP_MS,
   MIC_BLOCKED_ERROR,
+  RESUME_DEBOUNCE_MS,
+  RESUME_NOTE_CONTINUED,
+  RESUME_NOTE_RESTARTED,
+  SPEECH_NOTE_CAPTIONS_PAUSED,
+  SPEECH_NOTE_DENIED,
+  SPEECH_RETRY_FIRST_MS,
+  SPEECH_RETRY_MAX,
+  SPEECH_RETRY_NEXT_MS,
   SessionRuntime,
   keepAliveAudioAttempted,
   keepAliveStarters,
@@ -182,9 +190,11 @@ describe('pickRecorderMime', () => {
 
 class FakeRecorder {
   state = 'inactive'
+  timeslice: number | undefined
   ondataavailable: ((ev: { data: Blob }) => void) | null = null
   onstop: (() => void) | null = null
-  start() {
+  start(timeslice?: number) {
+    this.timeslice = timeslice
     this.state = 'recording'
   }
   stop() {
@@ -192,10 +202,16 @@ class FakeRecorder {
     this.ondataavailable?.({ data: new Blob(['x'], { type: 'audio/webm' }) })
     this.onstop?.()
   }
+  pause() {
+    if (this.state === 'recording') this.state = 'paused'
+  }
+  resume() {
+    if (this.state === 'paused') this.state = 'recording'
+  }
 }
 
-function fakeStream(stop: () => void = () => {}): MediaStream {
-  return { getTracks: () => [{ stop }] } as unknown as MediaStream
+function fakeStream(stop: () => void = () => {}, readyState = 'live'): MediaStream {
+  return { getTracks: () => [{ stop, readyState, onended: null }] } as unknown as MediaStream
 }
 
 function stubMicPermission(state: PermissionState | 'throw' | null) {
@@ -702,13 +718,16 @@ describe('SessionRuntime', () => {
     const rec = Rec.mock.results[0].value as FakeRecorder
     rec.state = 'inactive'
 
+    vi.useFakeTimers()
     setVisibility('hidden')
     document.dispatchEvent(new Event('visibilitychange'))
     rec.state = 'inactive'
 
     setVisibility('visible')
     document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(RESUME_DEBOUNCE_MS)
     await flush()
+    vi.useRealTimers()
 
     expect(Rec.mock.calls.length).toBeGreaterThanOrEqual(2)
     const rec2 = Rec.mock.results[Rec.mock.results.length - 1].value as FakeRecorder
@@ -716,5 +735,369 @@ describe('SessionRuntime', () => {
     expect(rt.getSnapshot().recording).toBe(true)
     expect(rt.getSnapshot().live).toBe(true)
     await rt.stop()
+  })
+})
+
+class FakeSpeechRec {
+  continuous = false
+  interimResults = false
+  lang = ''
+  onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null =
+    null
+  onend: (() => void) | null = null
+  onerror: ((ev: { error: string }) => void) | null = null
+  start = vi.fn(() => {})
+  stop = vi.fn(() => {
+    this.onend?.()
+  })
+}
+
+function speechHarness() {
+  const instances: FakeSpeechRec[] = []
+  const Ctor = vi.fn(function Speech() {
+    const rec = new FakeSpeechRec()
+    instances.push(rec)
+    return rec
+  })
+  return {
+    Ctor: Ctor as unknown as new () => FakeSpeechRec,
+    instances,
+    startCount: () => instances.reduce((n, r) => n + r.start.mock.calls.length, 0),
+  }
+}
+
+function hideApp() {
+  setVisibility('hidden')
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
+function showApp() {
+  setVisibility('visible')
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
+async function advanceResume() {
+  await vi.advanceTimersByTimeAsync(RESUME_DEBOUNCE_MS)
+  await flush()
+}
+
+function liveRuntime(over: ConstructorParameters<typeof SessionRuntime>[0] = {}) {
+  const Rec = vi.fn(function Rec() {
+    return new FakeRecorder()
+  })
+  const speech = Object.prototype.hasOwnProperty.call(over, 'SpeechRecognition')
+    ? null
+    : speechHarness()
+  const getUserMedia = over.getUserMedia ?? vi.fn(async () => fakeStream())
+  const rt = new SessionRuntime({
+    getUserMedia,
+    MediaRecorder: Rec as never,
+    SpeechRecognition: speech?.Ctor as never,
+    geolocation: null,
+    ...over,
+  })
+  return { rt, Rec, speech, getUserMedia }
+}
+
+
+function watchAudioAdds() {
+  const blobs: Blob[] = []
+  const orig = db.audioClips.add.bind(db.audioClips)
+  vi.spyOn(db.audioClips, 'add').mockImplementation((row) => {
+    blobs.push((row as { blob: Blob }).blob)
+    return orig(row)
+  })
+  return blobs
+}
+
+async function blobText(blob: Blob): Promise<string> {
+  if (blob && typeof (blob as Blob).arrayBuffer === 'function') {
+    return new TextDecoder().decode(await blob.arrayBuffer())
+  }
+  return await new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = () => reject(r.error)
+    r.readAsText(blob)
+  })
+}
+
+describe('leave/resume recording + speech', () => {
+  it('hide pauses speech but does not stop MediaRecorder or clear recording', async () => {
+    const { rt, Rec, speech } = liveRuntime()
+    await rt.start()
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    const recStop = vi.spyOn(rec, 'stop')
+    const recPause = vi.spyOn(rec, 'pause')
+    expect(rec.timeslice).toBe(1000)
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(speech!.startCount()).toBe(1)
+
+    hideApp()
+
+    expect(recStop).not.toHaveBeenCalled()
+    expect(recPause).not.toHaveBeenCalled()
+    expect(rec.state).toBe('recording')
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(rt.getSnapshot().live).toBe(true)
+    expect(rt.wantsRecognition()).toBe(true)
+    expect(speech!.instances[0].stop).toHaveBeenCalled()
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(String(rt.getSnapshot().speechNote ?? '')).not.toMatch(/permission denied/i)
+    await rt.stop()
+  })
+
+  it('onend while hidden does not call SpeechRecognition.start until visible', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    vi.useFakeTimers()
+    hideApp()
+    const starts = speech!.startCount()
+    speech!.instances[0].onend?.()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(speech!.startCount()).toBe(starts)
+    expect(rt.wantsRecognition()).toBe(true)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('hidden then visible starts recognition after debounce', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    expect(speech!.startCount()).toBe(1)
+    vi.useFakeTimers()
+    hideApp()
+    expect(speech!.instances.length).toBe(1)
+    showApp()
+    await vi.advanceTimersByTimeAsync(RESUME_DEBOUNCE_MS - 1)
+    expect(speech!.instances.length).toBe(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await flush()
+    expect(speech!.instances.length).toBe(2)
+    expect(speech!.instances[1].start).toHaveBeenCalled()
+    expect(rt.getSnapshot().recording).toBe(true)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('not-allowed while hidden does not set speechNote and keeps wantRecognition', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    hideApp()
+    speech!.instances[0].onerror?.({ error: 'not-allowed' })
+    speech!.instances[0].onend?.()
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    speech!.instances[0].onerror?.({ error: 'service-not-allowed' })
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    await rt.stop()
+  })
+
+  it('not-allowed on resume while stream live retries without permission denied', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    vi.useFakeTimers()
+    hideApp()
+    showApp()
+    await advanceResume()
+    expect(speech!.instances.length).toBe(2)
+    const rec2 = speech!.instances[1]
+    rec2.onerror?.({ error: 'not-allowed' })
+    rec2.onend?.()
+    expect(rt.getSnapshot().speechNote).not.toBe(SPEECH_NOTE_DENIED)
+    expect(String(rt.getSnapshot().speechNote ?? '')).not.toMatch(/permission denied/i)
+    expect(rt.wantsRecognition()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SPEECH_RETRY_FIRST_MS)
+    await flush()
+    expect(speech!.instances.length).toBe(3)
+    const rec3 = speech!.instances[2]
+    rec3.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: 'hello there how is the week going for you today really?' } }],
+    })
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('not-allowed retries exhaust to a soft captions note, not permission denied', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    const fireDenied = async () => {
+      const rec = speech!.instances[speech!.instances.length - 1]
+      rec.onerror?.({ error: 'not-allowed' })
+      rec.onend?.()
+      await flush()
+    }
+    vi.useFakeTimers()
+    await fireDenied()
+    for (let i = 0; i < SPEECH_RETRY_MAX; i += 1) {
+      const delay = i === 0 ? SPEECH_RETRY_FIRST_MS : SPEECH_RETRY_NEXT_MS
+      await vi.advanceTimersByTimeAsync(delay)
+      await flush()
+      await fireDenied()
+    }
+    expect(rt.getSnapshot().speechNote).toBe(SPEECH_NOTE_CAPTIONS_PAUSED)
+    expect(rt.getSnapshot().speechNote).not.toBe(SPEECH_NOTE_DENIED)
+    expect(rt.wantsRecognition()).toBe(true)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('aborted and no-speech do not set denied note', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    const rec = speech!.instances[0]
+    rec.onerror?.({ error: 'aborted' })
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    rec.onerror?.({ error: 'no-speech' })
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    rec.onerror?.({ error: 'network' })
+    expect(rt.getSnapshot().speechNote).toBe(null)
+    expect(rt.wantsRecognition()).toBe(true)
+    expect(String(rt.getSnapshot().speechNote ?? '')).not.toMatch(/permission denied/i)
+    await rt.stop()
+  })
+
+  it('pageshow + visibility visible close together start recognition at most once', async () => {
+    const { rt, speech } = liveRuntime()
+    await rt.start()
+    vi.useFakeTimers()
+    hideApp()
+    const before = speech!.startCount()
+    showApp()
+    window.dispatchEvent(new Event('pageshow'))
+    await advanceResume()
+    expect(speech!.startCount() - before).toBeLessThanOrEqual(1)
+    expect(speech!.startCount() - before).toBe(1)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('idle-stop is skipped while hidden', async () => {
+    let now = 1_000
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    })
+    const rt = new SessionRuntime({
+      now: () => now,
+      getUserMedia: vi.fn(async () => fakeStream()),
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    hideApp()
+    now = 1_000 + IDLE_STOP_MS
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().live).toBe(true)
+    expect(rt.getSnapshot().recording).toBe(true)
+    await rt.stop()
+  })
+
+  it('resume with inactive recorder continues capturing without wiping pre-leave chunks', async () => {
+    const saved = watchAudioAdds()
+    const { rt, Rec } = liveRuntime({ SpeechRecognition: null })
+    await rt.start()
+    rt.ingestSpeech('hello there how is the week going for you today really?', true)
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    rec.ondataavailable?.({ data: new Blob(['PRELEAVE'], { type: 'audio/webm' }) })
+    const recStop = vi.spyOn(rec, 'stop')
+    vi.useFakeTimers()
+    hideApp()
+    expect(recStop).not.toHaveBeenCalled()
+    rec.state = 'inactive'
+    showApp()
+    await advanceResume()
+    expect(Rec.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const rec2 = Rec.mock.results[Rec.mock.results.length - 1].value as FakeRecorder
+    expect(rec2.state).toBe('recording')
+    expect(rec2.timeslice).toBe(1000)
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(rt.getSnapshot().resumeNote).toBe(RESUME_NOTE_RESTARTED)
+    expect(String(rt.getSnapshot().resumeNote ?? '')).not.toMatch(/may have stopped/i)
+    rec2.ondataavailable?.({ data: new Blob(['POST'], { type: 'audio/webm' }) })
+    vi.useRealTimers()
+    await rt.stop()
+    expect(saved.length).toBeGreaterThan(0)
+    const text = await blobText(saved[0])
+    expect(text).toContain('PRELEAVE')
+    expect(text).toContain('POST')
+  })
+
+  it('paused recorder is resume()d not replaced', async () => {
+    const { rt, Rec } = liveRuntime({ SpeechRecognition: null })
+    await rt.start()
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    const resume = vi.spyOn(rec, 'resume')
+    rec.state = 'paused'
+    vi.useFakeTimers()
+    hideApp()
+    showApp()
+    await advanceResume()
+    expect(resume).toHaveBeenCalled()
+    expect(Rec).toHaveBeenCalledTimes(1)
+    expect(rec.state).toBe('recording')
+    expect(rt.getSnapshot().recording).toBe(true)
+    expect(rt.getSnapshot().resumeNote).toBe(RESUME_NOTE_CONTINUED)
+    vi.useRealTimers()
+    await rt.stop()
+  })
+
+  it('hide does not stop keep-alive starters', async () => {
+    const osc = vi.spyOn(keepAliveStarters, 'oscillator')
+    const el = vi.spyOn(keepAliveStarters, 'element')
+    const { rt, Rec } = liveRuntime({ SpeechRecognition: null })
+    await rt.start()
+    osc.mockClear()
+    el.mockClear()
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    const recStop = vi.spyOn(rec, 'stop')
+    hideApp()
+    expect(recStop).not.toHaveBeenCalled()
+    expect(osc).not.toHaveBeenCalled()
+    expect(el).not.toHaveBeenCalled()
+    expect(rt.getSnapshot().recording).toBe(true)
+    await rt.stop()
+  })
+
+  it('ended tracks on resume re-getUserMedia and keep chunks', async () => {
+    const saved = watchAudioAdds()
+    const track = { stop: vi.fn(), readyState: 'live', onended: null as (() => void) | null }
+    const stream = { getTracks: () => [track] } as unknown as MediaStream
+    const getUserMedia = vi.fn(async () => stream)
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    })
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    rt.ingestSpeech('hello there how is the week going for you today really?', true)
+    const rec = Rec.mock.results[0].value as FakeRecorder
+    rec.ondataavailable?.({ data: new Blob(['PRELEAVE'], { type: 'audio/webm' }) })
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    track.readyState = 'ended'
+    rec.state = 'inactive'
+    const stream2 = fakeStream()
+    getUserMedia.mockImplementation(async () => stream2)
+    vi.useFakeTimers()
+    hideApp()
+    showApp()
+    await advanceResume()
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(rt.getSnapshot().recording).toBe(true)
+    vi.useRealTimers()
+    await rt.stop()
+    expect(saved.length).toBeGreaterThan(0)
+    const text = await blobText(saved[0])
+    expect(text).toContain('PRELEAVE')
   })
 })
