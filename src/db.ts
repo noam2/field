@@ -46,6 +46,21 @@ class FieldDB extends Dexie {
             if (row.audioId === undefined) row.audioId = null
           })
       })
+    this.version(4)
+      .stores({
+        approaches: 'id, at, place, who, outcome, followUpAt, createdAt, sessionId, source',
+        sessions: 'id, startedAt',
+        audioClips: 'id, conversationId, createdAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('approaches')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            if (row.analysisSource === undefined) row.analysisSource = 'rules'
+            if (row.insight === undefined) row.insight = null
+          })
+      })
   }
 }
 

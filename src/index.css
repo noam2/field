@@ -223,6 +223,7 @@ p {
 
 input[type='text'],
 input[type='search'],
+input[type='password'],
 input[type='datetime-local'],
 input[type='date'],
 textarea {
@@ -766,4 +767,68 @@ textarea:focus {
   50% {
     opacity: 0.35;
   }
+}
+
+.key-banner {
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.key-banner a {
+  color: var(--accent);
+}
+
+.key-warn {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.pending-label {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sent-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--text-dim);
+}
+
+.sent-positive {
+  color: #8fca8f;
+  border-color: #3a5a3a;
+}
+
+.sent-negative {
+  color: var(--danger);
+  border-color: #5a3a3a;
+}
+
+.sent-mixed {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.sent-neutral {
+  color: var(--text-dim);
 }

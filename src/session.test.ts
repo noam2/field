@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from './db'
+import { setApiKey } from './openai'
 import {
   SessionRuntime,
   pickRecorderMime,
@@ -7,10 +8,13 @@ import {
   shouldSplitConversation,
   SILENCE_MS,
 } from './session'
+import * as understand from './understand'
 
 beforeEach(async () => {
   resetSessionRuntime()
   localStorage.clear()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   await db.approaches.clear()
   await db.sessions.clear()
   await db.audioClips.clear()
@@ -100,7 +104,84 @@ describe('SessionRuntime', () => {
     expect(row?.outcome).toBe('number')
     expect(row?.who).toBe('Maya')
     expect(row?.transcript).toMatch(/555/)
+    expect(row?.analysisSource).toBe('rules')
     expect(await db.sessions.count()).toBe(1)
     expect((await db.sessions.toCollection().first())?.endedAt).toBeTruthy()
+  })
+
+  it('does not call understand without an API key', async () => {
+    const spy = vi.spyOn(understand, 'understandTranscript')
+    const getUserMedia = vi.fn(async () => fakeStream())
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    rt.ingestSpeech('Hello there, how is the week going for you today really?', true)
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(spy).not.toHaveBeenCalled()
+    expect((await db.approaches.toCollection().first())?.analysisSource).toBe('rules')
+  })
+
+  it('enriches with transcription then insight when a key is set', async () => {
+    setApiKey('sk-test-field')
+    const insight = {
+      sentiment: 'positive',
+      success: true,
+      valence: 0.8,
+      outcome: 'number',
+      who: 'Maya',
+      topics: ['work'],
+      commitments: [],
+      objections: [],
+      questionsAsked: 1,
+      energy: 'high',
+      summary: 'Maya shared a number.',
+      followUpSuggestion: 'Text Maya.',
+      exchangedContact: true,
+      scheduled: false,
+      rejection: false,
+      model: 'gpt-4o-mini',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/audio/transcriptions')) {
+        return new Response('Whisper: Maya here is my number 555-1111.', { status: 200 })
+      }
+      if (url.includes('/chat/completions')) {
+        return new Response(JSON.stringify({
+          model: 'gpt-4o-mini',
+          choices: [{ message: { content: JSON.stringify(insight) } }],
+        }), { status: 200 })
+      }
+      return new Response('missing', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const getUserMedia = vi.fn(async () => fakeStream())
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    const rt = new SessionRuntime({
+      getUserMedia,
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    rt.ingestSpeech("Hey I'm Maya. Here's my number.", true)
+    await rt.stop()
+    await rt.waitForBackground()
+    const row = await db.approaches.toCollection().first()
+    expect(row?.analysisSource).toBe('model')
+    expect(row?.transcript).toMatch(/Whisper/)
+    expect(row?.insight?.who).toBe('Maya')
+    expect(row?.insight?.success).toBe(true)
+    vi.unstubAllGlobals()
   })
 })

@@ -1,4 +1,4 @@
-import type { Approach, Outcome } from './types'
+import type { Approach, Outcome, Sentiment } from './types'
 import {
   OUTCOME_LABEL,
   OUTCOMES,
@@ -11,6 +11,8 @@ import {
   weekdayName,
   weekdayShort,
 } from './utils'
+
+export const SENTIMENTS: Sentiment[] = ['positive', 'mixed', 'negative', 'neutral']
 
 export function weekCounts(
   approaches: Approach[],
@@ -31,7 +33,8 @@ export function weekCounts(
 
 export function unusedNumbers(approaches: Approach[]): Approach[] {
   return approaches.filter((a) => {
-    if (a.outcome !== 'number' || a.followUpDone) return false
+    const gotNumber = a.insight?.exchangedContact || a.outcome === 'number'
+    if (!gotNumber || a.followUpDone) return false
     const later = approaches.some((b) => b.id !== a.id && sameWho(b, a.who) && b.at > a.at)
     return !later
   })
@@ -48,38 +51,117 @@ export function recordingsOnly(approaches: Approach[]): Approach[] {
   return approaches.filter((a) => a.source === 'recording')
 }
 
+export function approachSuccess(a: Approach): boolean {
+  if (a.insight) return a.insight.success
+  if (a.analysis) {
+    return (a.analysis.exchangedContact || a.analysis.scheduled) && a.analysis.outcome !== 'no'
+  }
+  return isConverted(a.outcome)
+}
+
+export function approachSentiment(a: Approach): Sentiment {
+  if (a.insight) return a.insight.sentiment
+  if (a.analysis?.outcome === 'no' || a.outcome === 'no') return 'negative'
+  if (approachSuccess(a)) return 'positive'
+  return 'neutral'
+}
+
+export function approachValence(a: Approach): number {
+  if (a.insight) return a.insight.valence
+  if (a.analysis?.outcome === 'no' || a.outcome === 'no') return -0.5
+  if (approachSuccess(a)) return 0.5
+  return 0
+}
+
+export function approachTopics(a: Approach): string[] {
+  return a.insight?.topics ?? a.analysis?.topics ?? []
+}
+
+export function approachCommitments(a: Approach): string[] {
+  return a.insight?.commitments ?? a.analysis?.commitments ?? []
+}
+
+export function exchangedContactOf(a: Approach): boolean {
+  return a.insight?.exchangedContact || a.analysis?.exchangedContact || a.outcome === 'number'
+}
+
+export function scheduledOf(a: Approach): boolean {
+  return a.insight?.scheduled || a.analysis?.scheduled || a.outcome === 'date'
+}
+
+export function rejectionOf(a: Approach): boolean {
+  if (a.insight) return a.insight.rejection
+  return a.analysis?.outcome === 'no' || a.outcome === 'no'
+}
+
+export function questionsOf(a: Approach): number {
+  return a.insight?.questionsAsked ?? a.analysis?.questionCount ?? 0
+}
+
+export function successRate(approaches: Approach[]): number {
+  const n = approaches.length
+  if (n === 0) return 0
+  return approaches.filter(approachSuccess).length / n
+}
+
+export function filterByHours(approaches: Approach[], hours: number[]): Approach[] {
+  const set = new Set(hours)
+  return approaches.filter((a) => set.has(new Date(a.at).getHours()))
+}
+
+export function sentimentCounts(approaches: Approach[]): Record<Sentiment, number> {
+  const counts: Record<Sentiment, number> = {
+    positive: 0,
+    mixed: 0,
+    negative: 0,
+    neutral: 0,
+  }
+  for (const a of approaches) counts[approachSentiment(a)] += 1
+  return counts
+}
+
+export function topicCounts(approaches: Approach[]): { topic: string; count: number }[] {
+  const topicMap = new Map<string, number>()
+  for (const a of approaches) {
+    for (const t of approachTopics(a)) {
+      topicMap.set(t, (topicMap.get(t) ?? 0) + 1)
+    }
+  }
+  return [...topicMap.entries()]
+    .map(([topic, count]) => ({ topic, count }))
+    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+}
+
 export type RecordingStats = {
   conversations: number
   talkTimeSeconds: number
   contactRate: number
   scheduleRate: number
+  rejectionRate: number
+  successRate: number
   questionRate: number
   topics: { topic: string; count: number }[]
+  sentiment: Record<Sentiment, number>
 }
 
 export function recordingStats(approaches: Approach[]): RecordingStats {
   const rows = recordingsOnly(approaches)
   const n = rows.length
   const talkTimeSeconds = rows.reduce((s, a) => s + (a.dwellSeconds ?? 0), 0)
-  const contacts = rows.filter((a) => a.analysis?.exchangedContact || a.outcome === 'number').length
-  const scheduled = rows.filter((a) => a.analysis?.scheduled || a.outcome === 'date').length
-  const questions = rows.reduce((s, a) => s + (a.analysis?.questionCount ?? 0), 0)
-  const topicMap = new Map<string, number>()
-  for (const a of rows) {
-    for (const t of a.analysis?.topics ?? []) {
-      topicMap.set(t, (topicMap.get(t) ?? 0) + 1)
-    }
-  }
-  const topics = [...topicMap.entries()]
-    .map(([topic, count]) => ({ topic, count }))
-    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+  const contacts = rows.filter(exchangedContactOf).length
+  const scheduled = rows.filter(scheduledOf).length
+  const rejections = rows.filter(rejectionOf).length
+  const questions = rows.reduce((s, a) => s + questionsOf(a), 0)
   return {
     conversations: n,
     talkTimeSeconds,
     contactRate: n === 0 ? 0 : contacts / n,
     scheduleRate: n === 0 ? 0 : scheduled / n,
+    rejectionRate: n === 0 ? 0 : rejections / n,
+    successRate: successRate(rows),
     questionRate: n === 0 ? 0 : questions / n,
-    topics,
+    topics: topicCounts(rows),
+    sentiment: sentimentCounts(rows),
   }
 }
 
@@ -92,7 +174,7 @@ export function rankPlaces(approaches: Approach[], minCount = 3): PlaceRank[] {
     cur.count += 1
     if (a.source !== 'auto') {
       cur.eligible += 1
-      if (isConverted(a.outcome)) cur.converted += 1
+      if (approachSuccess(a)) cur.converted += 1
     }
     cur.rate = cur.eligible === 0 ? 0 : cur.converted / cur.eligible
     map.set(key, cur)
@@ -100,6 +182,32 @@ export function rankPlaces(approaches: Approach[], minCount = 3): PlaceRank[] {
   return [...map.values()]
     .filter((p) => p.count >= minCount)
     .sort((a, b) => b.rate - a.rate || b.count - a.count)
+}
+
+export function successByPlace(approaches: Approach[], minCount = 2): PlaceRank[] {
+  return rankPlaces(approaches, minCount)
+}
+
+export type PlaceValence = {
+  place: string
+  count: number
+  valence: number
+}
+
+export function meanValenceByPlace(approaches: Approach[], minCount = 2): PlaceValence[] {
+  const map = new Map<string, { place: string; count: number; sum: number }>()
+  for (const a of approaches) {
+    const key = a.place.trim().toLowerCase()
+    if (!key) continue
+    const cur = map.get(key) ?? { place: a.place.trim(), count: 0, sum: 0 }
+    cur.count += 1
+    cur.sum += approachValence(a)
+    map.set(key, cur)
+  }
+  return [...map.values()]
+    .filter((p) => p.count >= minCount)
+    .map((p) => ({ place: p.place, count: p.count, valence: p.sum / p.count }))
+    .sort((a, b) => b.valence - a.valence || b.count - a.count)
 }
 
 export function placeConversionNote(
@@ -122,6 +230,26 @@ export function dueFollowUps(approaches: Approach[], now = new Date()): Approach
   return approaches
     .filter((a) => Boolean(a.followUpAt) && !a.followUpDone && isFollowUpDue(a.followUpAt!, now))
     .sort((a, b) => (a.followUpAt! < b.followUpAt! ? -1 : 1))
+}
+
+export function modelFollowUps(approaches: Approach[]): {
+  id: string
+  who: string
+  place: string
+  suggestion: string
+}[] {
+  const rows: { id: string; who: string; place: string; suggestion: string }[] = []
+  for (const a of approaches) {
+    const suggestion = a.insight?.followUpSuggestion
+    if (!suggestion || a.followUpDone) continue
+    rows.push({
+      id: a.id,
+      who: (a.insight?.who || a.who).trim(),
+      place: a.place,
+      suggestion,
+    })
+  }
+  return rows
 }
 
 export function followUpRate(approaches: Approach[]): {
@@ -159,7 +287,7 @@ export function hourStats(approaches: Approach[]): Bucket[] {
   for (const a of approaches) {
     const hour = new Date(a.at).getHours()
     buckets[hour].count += 1
-    if (a.source !== 'auto' && isConverted(a.outcome)) buckets[hour].converted += 1
+    if (a.source !== 'auto' && approachSuccess(a)) buckets[hour].converted += 1
   }
   return buckets
     .filter((b) => b.count > 0)
@@ -173,7 +301,7 @@ export function hourStats(approaches: Approach[]): Bucket[] {
         rate: b.converted / b.count,
       }
     })
-    .sort((a, b) => b.count - a.count || b.rate - a.rate)
+    .sort((a, b) => b.rate - a.rate || b.count - a.count)
 }
 
 export function weekdayStats(approaches: Approach[]): Bucket[] {
@@ -186,7 +314,7 @@ export function weekdayStats(approaches: Approach[]): Bucket[] {
   for (const a of approaches) {
     const index = (new Date(a.at).getDay() + 6) % 7
     buckets[index].count += 1
-    if (a.source !== 'auto' && isConverted(a.outcome)) buckets[index].converted += 1
+    if (a.source !== 'auto' && approachSuccess(a)) buckets[index].converted += 1
   }
   return buckets
     .filter((b) => b.count > 0)
@@ -196,7 +324,7 @@ export function weekdayStats(approaches: Approach[]): Bucket[] {
       converted: b.converted,
       rate: b.converted / b.count,
     }))
-    .sort((a, b) => b.count - a.count || b.rate - a.rate)
+    .sort((a, b) => b.rate - a.rate || b.count - a.count)
 }
 
 export function quietStretch(
@@ -233,13 +361,13 @@ export function peopleWithNumbers(approaches: Approach[]): PersonCard[] {
   }
   const cards: PersonCard[] = []
   for (const list of byWho.values()) {
-    if (!list.some((a) => a.outcome === 'number')) continue
+    if (!list.some((a) => exchangedContactOf(a))) continue
     list.sort((a, b) => (a.at < b.at ? 1 : -1))
     const last = list[0]
     const pending = list.find((a) => a.followUpAt && !a.followUpDone)
-    let nextStep = 'Reach out when it feels right'
+    let nextStep = last.insight?.followUpSuggestion || 'Reach out when it feels right'
     if (pending?.followUpAt) nextStep = `Follow up ${formatShortDate(pending.followUpAt)}`
-    else if (last.outcome !== 'number') nextStep = OUTCOME_LABEL[last.outcome]
+    else if (last.outcome !== 'number' && !last.insight?.exchangedContact) nextStep = OUTCOME_LABEL[last.outcome]
     cards.push({ who: last.who, lastAt: last.at, nextStep })
   }
   cards.sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1))

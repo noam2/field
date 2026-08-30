@@ -1,4 +1,5 @@
-import type { Approach, ApproachSource, Feel, Outcome, Session, TranscriptAnalysis } from './types'
+import type { AnalysisSource, Approach, ApproachSource, Feel, Insight, Outcome, Session, TranscriptAnalysis } from './types'
+import { parseInsightJson } from './understand'
 
 export const OUTCOMES: Outcome[] = ['talked', 'number', 'chat', 'date', 'no', 'other']
 
@@ -287,6 +288,13 @@ export function coerceApproach(value: unknown): Approach | null {
   const source: ApproachSource =
     v.source === 'auto' || v.source === 'recording' || v.source === 'manual' ? v.source : 'manual'
   const analysis = coerceAnalysis(v.analysis)
+  const insight: Insight | null = parseInsightJson(v.insight)
+  const analysisSource: AnalysisSource =
+    v.analysisSource === 'model' || v.analysisSource === 'pending' || v.analysisSource === 'rules'
+      ? v.analysisSource
+      : insight
+        ? 'model'
+        : 'rules'
   return {
     id: v.id,
     at: v.at,
@@ -310,6 +318,8 @@ export function coerceApproach(value: unknown): Approach | null {
     transcript: typeof v.transcript === 'string' ? v.transcript : '',
     analysis,
     audioId: typeof v.audioId === 'string' ? v.audioId : null,
+    analysisSource,
+    insight,
   }
 }
 

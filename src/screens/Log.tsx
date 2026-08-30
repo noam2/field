@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { hasApiKey } from '../openai'
 import { getSessionRuntime } from '../session'
 import type { Approach } from '../types'
 import { formatCoordPlace, formatElapsed } from '../utils'
@@ -103,6 +104,9 @@ export function Log({ approaches }: Props) {
       <p className="hint">Keep Field open. iOS will suspend background capture in a PWA.</p>
 
       {snap.speechNote && <p className="speech-note">{snap.speechNote}</p>}
+      {!hasApiKey() && (
+        <p className="key-warn">Recording without understanding — add key in Settings.</p>
+      )}
       {snap.error && (
         <div className="error-banner" role="alert">
           <p>{snap.error}</p>

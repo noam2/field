@@ -26,6 +26,8 @@ export function approach(over: Partial<Approach> = {}): Approach {
     transcript: '',
     analysis: null,
     audioId: null,
+    analysisSource: 'rules',
+    insight: null,
     ...over,
   }
 }

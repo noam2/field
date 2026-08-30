@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { db } from '../db'
 import {
+  approachCommitments,
   dueFollowUps,
+  modelFollowUps,
   peopleWithNumbers,
   pct,
   placeConversionNote,
@@ -26,11 +28,12 @@ export function Next({ approaches }: Props) {
   const quiet = useMemo(() => quietStretch(approaches), [approaches])
   const places = useMemo(() => placeConversionNote(approaches), [approaches])
   const people = useMemo(() => peopleWithNumbers(approaches), [approaches])
+  const suggestions = useMemo(() => modelFollowUps(approaches), [approaches])
   const commitments = useMemo(() => {
     const rows: { id: string; who: string; place: string; text: string }[] = []
     for (const a of approaches) {
-      for (const c of a.analysis?.commitments ?? []) {
-        rows.push({ id: `${a.id}:${c}`, who: a.who, place: a.place, text: c })
+      for (const c of approachCommitments(a)) {
+        rows.push({ id: `${a.id}:${c}`, who: a.who || a.insight?.who || '', place: a.place, text: c })
       }
     }
     return rows.slice(0, 12)
@@ -43,7 +46,7 @@ export function Next({ approaches }: Props) {
         <h1>Next</h1>
       </header>
 
-      {due.length === 0 && unused.length === 0 && !quiet && !places && people.length === 0 && commitments.length === 0 && (
+      {due.length === 0 && unused.length === 0 && !quiet && !places && people.length === 0 && commitments.length === 0 && suggestions.length === 0 && (
         <div className="empty">
           <p className="empty-title">Nothing waiting</p>
           <p>Follow-ups from recorded conversations will show up here.</p>
@@ -55,6 +58,18 @@ export function Next({ approaches }: Props) {
           <p className="section-title">Due</p>
           {due.map((row) => (
             <FollowCard key={row.id} row={row} />
+          ))}
+        </>
+      )}
+
+      {suggestions.length > 0 && (
+        <>
+          <p className="section-title">Suggested follow-ups</p>
+          {suggestions.map((s) => (
+            <article key={`s-${s.id}`} className="suggest">
+              <p className="card-title">{s.who.trim() || s.place || 'Conversation'}</p>
+              <p>{s.suggestion}</p>
+            </article>
           ))}
         </>
       )}

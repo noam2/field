@@ -69,6 +69,8 @@ export function ManualLog({ onSaved, onCancel }: Props) {
       transcript: '',
       analysis: null,
       audioId: null,
+      analysisSource: 'rules',
+      insight: null,
     })
     setLastPlace(place.trim())
     toast('Saved')

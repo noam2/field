@@ -37,7 +37,7 @@ export function History({ approaches }: Props) {
     return approaches.filter((a) => {
       if (outcome !== 'all' && a.outcome !== outcome) return false
       if (!needle) return true
-      return [a.who, a.place, a.notes, a.opener, a.transcript].some((s) =>
+      return [a.who, a.place, a.notes, a.opener, a.transcript, a.insight?.summary].some((s) =>
         (s ?? '').toLowerCase().includes(needle),
       )
     })
@@ -138,7 +138,17 @@ export function History({ approaches }: Props) {
                   {formatDuration(row.dwellSeconds)}
                   <span className="dot">·</span>
                   {row.place}
-                  {row.transcript ? (
+                  {row.analysisSource === 'pending' ? (
+                    <>
+                      <span className="dot">·</span>
+                      <span className="pending-label">Understanding…</span>
+                    </>
+                  ) : row.insight?.summary ? (
+                    <>
+                      <span className="dot">·</span>
+                      {snippet(row.insight.summary)}
+                    </>
+                  ) : row.transcript ? (
                     <>
                       <span className="dot">·</span>
                       {snippet(row.transcript)}
@@ -240,6 +250,50 @@ function Detail({
         <dd>{row.feel ? FEEL_LABEL[row.feel] : '—'}</dd>
       </dl>
 
+      {row.analysisSource === 'pending' && <p className="pending-label">Understanding…</p>}
+
+      {row.insight && (
+        <>
+          <div className="chip-row">
+            <span className={`sent-chip sent-${row.insight.sentiment}`}>{row.insight.sentiment}</span>
+            <span className={row.insight.success ? 'sent-chip sent-positive' : 'sent-chip sent-negative'}>
+              {row.insight.success ? 'success' : 'no success'}
+            </span>
+            {row.analysisSource === 'rules' && <span className="sent-chip">rules fallback</span>}
+          </div>
+          <p>{row.insight.summary}</p>
+          {row.insight.topics.length > 0 && (
+            <p className="muted">Topics: {row.insight.topics.join(', ')}</p>
+          )}
+          {row.insight.commitments.length > 0 && (
+            <>
+              <p className="section-title">Commitments</p>
+              <ul className="commit-list">
+                {row.insight.commitments.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {row.insight.objections.length > 0 && (
+            <>
+              <p className="section-title">Objections</p>
+              <ul className="commit-list">
+                {row.insight.objections.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {row.insight.followUpSuggestion && (
+            <>
+              <p className="section-title">Follow-up</p>
+              <p>{row.insight.followUpSuggestion}</p>
+            </>
+          )}
+        </>
+      )}
+
       {row.audioId && (
         <>
           <p className="section-title">Audio</p>
@@ -254,7 +308,7 @@ function Detail({
         </>
       ) : null}
 
-      {row.analysis?.commitments && row.analysis.commitments.length > 0 && (
+      {!row.insight && row.analysis?.commitments && row.analysis.commitments.length > 0 && (
         <>
           <p className="section-title">Commitments</p>
           <ul className="commit-list">
@@ -265,7 +319,7 @@ function Detail({
         </>
       )}
 
-      {row.analysis?.topics && row.analysis.topics.length > 0 && (
+      {!row.insight && row.analysis?.topics && row.analysis.topics.length > 0 && (
         <p className="muted">Topics: {row.analysis.topics.join(', ')}</p>
       )}
 

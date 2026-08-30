@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { Overlay } from '../components/Overlay'
 import { db, setLastPlace } from '../db'
+import { getApiKey, hasApiKey, setApiKey } from '../openai'
 import { getSessionRuntime } from '../session'
 import { toast } from '../toast'
 import type { BackupFile } from '../types'
@@ -14,6 +15,9 @@ export function Settings({ onClose }: Props) {
   const [confirmClear, setConfirmClear] = useState(false)
   const [busy, setBusy] = useState(false)
   const [manual, setManual] = useState(false)
+  const [keyDraft, setKeyDraft] = useState(() => getApiKey())
+  const [keySaved, setKeySaved] = useState(() => hasApiKey())
+  const [testing, setTesting] = useState(false)
 
   async function exportJson() {
     const approaches = await db.approaches.toArray()
@@ -79,10 +83,79 @@ export function Settings({ onClose }: Props) {
         <div className="settings">
           <p className="muted">
             Recording is only on during a session you start. Everyone in the conversation is an
-            enrolled study participant. Audio and transcripts stay on this phone. Live captions may
-            use Apple or Google speech services on the device. Location is stored as metadata on
-            each conversation. Field does not upload your data.
+            enrolled study participant. Audio stays on this phone. Transcripts are sent to OpenAI
+            for transcription and understanding when a key is set. Live captions may use Apple or
+            Google speech services on the device. Location is stored as metadata on each
+            conversation. Field does not upload your data to its own server.
           </p>
+
+          {!keySaved && (
+            <div className="key-banner" role="status">
+              <p>Add an OpenAI key to transcribe and understand encounters.</p>
+              <p>
+                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+                  Get a key at platform.openai.com/api-keys
+                </a>
+              </p>
+            </div>
+          )}
+
+          <p className="section-title">OpenAI</p>
+          <label className="field">
+            <span className="label">API key</span>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              placeholder={keySaved ? 'Key saved — paste to replace' : 'sk-…'}
+              aria-label="OpenAI API key"
+            />
+          </label>
+          <div className="card-actions">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => {
+                setApiKey(keyDraft)
+                const ok = hasApiKey()
+                setKeySaved(ok)
+                toast(ok ? 'API key saved' : 'API key cleared')
+              }}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={testing || !keyDraft.trim()}
+              onClick={() => {
+                void (async () => {
+                  setTesting(true)
+                  try {
+                    const draft = keyDraft.trim()
+                    const res = await fetch('https://api.openai.com/v1/models', {
+                      headers: { Authorization: `Bearer ${draft}` },
+                    })
+                    if (!res.ok) {
+                      toast('Key did not work')
+                      return
+                    }
+                    setApiKey(draft)
+                    setKeySaved(true)
+                    toast('Key works')
+                  } catch {
+                    toast('Could not reach OpenAI')
+                  } finally {
+                    setTesting(false)
+                  }
+                })()
+              }}
+            >
+              {testing ? 'Testing…' : 'Test key'}
+            </button>
+          </div>
 
           <button type="button" className="btn-secondary" onClick={() => void exportJson()}>
             Export JSON

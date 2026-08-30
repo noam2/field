@@ -1,6 +1,9 @@
 export type Outcome = 'number' | 'chat' | 'date' | 'talked' | 'no' | 'other'
 export type Feel = 1 | 2 | 3
 export type ApproachSource = 'auto' | 'manual' | 'recording'
+export type AnalysisSource = 'rules' | 'model' | 'pending'
+export type Sentiment = 'positive' | 'mixed' | 'negative' | 'neutral'
+export type Energy = 'low' | 'medium' | 'high'
 
 export type TranscriptAnalysis = {
   wordCount: number
@@ -12,6 +15,25 @@ export type TranscriptAnalysis = {
   outcome: Outcome
   followUpAt: string | null
   summary: string
+}
+
+export type Insight = {
+  sentiment: Sentiment
+  success: boolean
+  valence: number
+  outcome: Outcome
+  who: string
+  topics: string[]
+  commitments: string[]
+  objections: string[]
+  questionsAsked: number
+  energy: Energy
+  summary: string
+  followUpSuggestion: string | null
+  exchangedContact: boolean
+  scheduled: boolean
+  rejection: boolean
+  model: string
 }
 
 export type Approach = {
@@ -37,6 +59,8 @@ export type Approach = {
   transcript: string
   analysis: TranscriptAnalysis | null
   audioId: string | null
+  analysisSource: AnalysisSource
+  insight: Insight | null
 }
 
 export type Session = {
@@ -59,4 +83,12 @@ export type BackupFile = {
   exportedAt: string
   approaches: Approach[]
   sessions?: Session[]
+}
+
+export type UnderstandContext = {
+  at: string
+  place: string
+  durationSec: number
+  lat: number | null
+  lng: number | null
 }

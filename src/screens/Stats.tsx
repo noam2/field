@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 import {
   hourStats,
+  meanValenceByPlace,
   pct,
-  rankPlaces,
   recordingStats,
   recordingsOnly,
+  successByPlace,
   weekCounts,
   weekdayStats,
 } from '../stats'
@@ -19,7 +20,8 @@ export function Stats({ approaches, onLog }: Props) {
   const weeks = useMemo(() => weekCounts(recs), [recs])
   const hours = useMemo(() => hourStats(recs), [recs])
   const days = useMemo(() => weekdayStats(recs), [recs])
-  const places = useMemo(() => rankPlaces(recs, 1), [recs])
+  const places = useMemo(() => successByPlace(recs, 2), [recs])
+  const valencePlaces = useMemo(() => meanValenceByPlace(recs, 2), [recs])
   const streak = useMemo(() => computeStreak(recs), [recs])
   const since = useMemo(() => daysSinceLast(recs), [recs])
 
@@ -42,10 +44,11 @@ export function Stats({ approaches, onLog }: Props) {
   }
 
   const weekMax = Math.max(weeks.thisWeek, weeks.lastWeek, 1)
-  const hourMax = Math.max(...hours.map((h) => h.count), 1)
-  const dayMax = Math.max(...days.map((d) => d.count), 1)
-  const placeMax = Math.max(...places.map((p) => p.count), 1)
+  const hourMax = Math.max(...hours.map((h) => h.rate), 0.01)
+  const dayMax = Math.max(...days.map((d) => d.rate), 0.01)
+  const placeMax = Math.max(...places.map((p) => p.rate), 0.01)
   const topicMax = Math.max(...rec.topics.map((t) => t.count), 1)
+  const valMax = Math.max(...valencePlaces.map((p) => Math.abs(p.valence)), 0.01)
 
   return (
     <div className="screen">
@@ -60,6 +63,10 @@ export function Stats({ approaches, onLog }: Props) {
           <p className="stat-n">{rec.conversations}</p>
         </div>
         <div className="stat-tile">
+          <p className="muted">Success rate</p>
+          <p className="stat-n">{pct(rec.successRate)}</p>
+        </div>
+        <div className="stat-tile">
           <p className="muted">Talk time</p>
           <p className="stat-n">{formatDuration(rec.talkTimeSeconds)}</p>
         </div>
@@ -70,6 +77,10 @@ export function Stats({ approaches, onLog }: Props) {
         <div className="stat-tile">
           <p className="muted">Schedule rate</p>
           <p className="stat-n">{pct(rec.scheduleRate)}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="muted">Rejection rate</p>
+          <p className="stat-n">{pct(rec.rejectionRate)}</p>
         </div>
         <div className="stat-tile">
           <p className="muted">Questions / talk</p>
@@ -90,6 +101,26 @@ export function Stats({ approaches, onLog }: Props) {
         <div className="stat-tile">
           <p className="muted">Days since last</p>
           <p className="stat-n">{since ?? '—'}</p>
+        </div>
+      </div>
+
+      <p className="section-title">Sentiment</p>
+      <div className="stat-grid">
+        <div className="stat-tile">
+          <p className="muted">Positive</p>
+          <p className="stat-n">{rec.sentiment.positive}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="muted">Negative</p>
+          <p className="stat-n">{rec.sentiment.negative}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="muted">Mixed</p>
+          <p className="stat-n">{rec.sentiment.mixed}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="muted">Neutral</p>
+          <p className="stat-n">{rec.sentiment.neutral}</p>
         </div>
       </div>
 
@@ -127,26 +158,53 @@ export function Stats({ approaches, onLog }: Props) {
         </>
       )}
 
-      <p className="section-title">Best hours</p>
-      {hours.slice(0, 6).map((row) => (
-        <Bar key={row.label} label={row.label} value={row.count} max={hourMax} hint={`${row.count}`} />
-      ))}
+      <p className="section-title">Success by hour</p>
+      {hours.length === 0 ? (
+        <p className="muted">No hour data yet.</p>
+      ) : (
+        hours.map((row) => (
+          <Bar key={row.label} label={row.label} value={row.rate} max={hourMax} hint={`${pct(row.rate)} · ${row.count}`} />
+        ))
+      )}
 
-      <p className="section-title">Weekdays</p>
-      {days.map((row) => (
-        <Bar key={row.label} label={row.label} value={row.count} max={dayMax} hint={`${row.count}`} />
-      ))}
+      <p className="section-title">Success by weekday</p>
+      {days.length === 0 ? (
+        <p className="muted">No weekday data yet.</p>
+      ) : (
+        days.map((row) => (
+          <Bar key={row.label} label={row.label} value={row.rate} max={dayMax} hint={`${pct(row.rate)} · ${row.count}`} />
+        ))
+      )}
 
-      <p className="section-title">Places</p>
-      {places.slice(0, 8).map((row) => (
-        <Bar
-          key={row.place}
-          label={row.place}
-          value={row.count}
-          max={placeMax}
-          hint={`${row.count} · ${pct(row.rate)}`}
-        />
-      ))}
+      <p className="section-title">Success by place</p>
+      {places.length === 0 ? (
+        <p className="muted">Need at least two conversations at a place.</p>
+      ) : (
+        places.slice(0, 8).map((row) => (
+          <Bar
+            key={row.place}
+            label={row.place}
+            value={row.rate}
+            max={placeMax}
+            hint={`${pct(row.rate)} · ${row.count}`}
+          />
+        ))
+      )}
+
+      <p className="section-title">Mean valence by place</p>
+      {valencePlaces.length === 0 ? (
+        <p className="muted">Need at least two conversations at a place.</p>
+      ) : (
+        valencePlaces.slice(0, 8).map((row) => (
+          <Bar
+            key={`v-${row.place}`}
+            label={row.place}
+            value={Math.abs(row.valence)}
+            max={valMax}
+            hint={row.valence.toFixed(2)}
+          />
+        ))
+      )}
     </div>
   )
 }

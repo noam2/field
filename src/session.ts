@@ -1,7 +1,11 @@
-import { analyzeTranscript, extractIntroName } from './analyze'
+import { analyzeTranscript, extractIntroName, tomorrowIso } from './analyze'
 import { db } from './db'
+import { hasApiKey } from './openai'
+import { toast } from './toast'
+import { transcribeAudio } from './transcribe'
+import { understandTranscript } from './understand'
 import { formatCoordPlace, nowISO } from './utils'
-import type { Approach } from './types'
+import type { Approach, UnderstandContext } from './types'
 
 export const SILENCE_MS = 45_000
 export const PING_THROTTLE_MS = 10_000
@@ -196,6 +200,7 @@ export class SessionRuntime {
   private convStartedMs: number | null = null
   private finalTranscript = ''
   private writeChain: Promise<void> = Promise.resolve()
+  private enrichChain: Promise<void> = Promise.resolve()
   private mime = ''
 
   constructor(deps: SessionDeps = {}) {
@@ -215,6 +220,10 @@ export class SessionRuntime {
   }
 
   getSnapshot = (): SessionSnapshot => this.snapshot
+
+  waitForBackground(): Promise<void> {
+    return this.writeChain.then(() => this.enrichChain)
+  }
 
   isLive(): boolean {
     return this.snapshot.live
@@ -499,6 +508,7 @@ export class SessionRuntime {
       if (!place && lat != null && lng != null) {
         place = await reverseGeocode(lat, lng)
       }
+      const keyed = hasApiKey()
       const now = nowISO()
       const row: Approach = {
         id: convId,
@@ -523,14 +533,73 @@ export class SessionRuntime {
         transcript: combined,
         analysis,
         audioId,
+        analysisSource: keyed ? 'pending' : 'rules',
+        insight: null,
       }
       await db.approaches.put(row)
       this.emit({ conversationCount: this.snapshot.conversationCount + 1 })
+      if (keyed) {
+        const ctx: UnderstandContext = {
+          at: row.at,
+          place: row.place,
+          durationSec,
+          lat,
+          lng,
+        }
+        const job = this.enrichConversation(row.id, blob, mime, combined, ctx)
+        this.enrichChain = this.enrichChain.then(() => job, () => job)
+      }
     }
     this.writeChain = this.writeChain.then(run, run)
     await this.writeChain
     this.chunks = []
     this.finalTranscript = ''
+  }
+
+  private async enrichConversation(
+    id: string,
+    blob: Blob | null,
+    mime: string,
+    liveTranscript: string,
+    ctx: UnderstandContext,
+  ): Promise<void> {
+    let text = liveTranscript
+    let transcribed = false
+    if (blob && blob.size > 0) {
+      try {
+        text = await transcribeAudio(blob, mime)
+        transcribed = true
+      } catch {
+        text = liveTranscript
+      }
+    }
+    try {
+      const insight = await understandTranscript(text, ctx)
+      const existing = await db.approaches.get(id)
+      if (!existing) return
+      const who = insight.who.trim() || existing.who
+      const followUpAt =
+        existing.followUpAt ??
+        (insight.followUpSuggestion || insight.success ? tomorrowIso() : null)
+      await db.approaches.update(id, {
+        transcript: text || existing.transcript,
+        insight,
+        analysisSource: 'model',
+        who,
+        outcome: insight.outcome,
+        notes: insight.summary,
+        followUpAt,
+        updatedAt: nowISO(),
+      })
+    } catch {
+      toast('Could not understand this conversation')
+      const patch: Partial<Approach> = {
+        analysisSource: 'rules',
+        updatedAt: nowISO(),
+      }
+      if (transcribed && text) patch.transcript = text
+      await db.approaches.update(id, patch)
+    }
   }
 
   private startRecognition(): void {
