@@ -45,6 +45,17 @@ describe('Log', () => {
     expect(getUserMedia).not.toHaveBeenCalled()
   })
 
+  it('Install Field button fires prompt() after beforeinstallprompt', async () => {
+    const prompt = vi.fn(async () => {})
+    const event = new Event('beforeinstallprompt', { cancelable: true })
+    Object.defineProperty(event, 'prompt', { value: prompt })
+    render(<Log approaches={[]} />)
+    window.dispatchEvent(event)
+    const button = await screen.findByRole('button', { name: /^install field$/i })
+    await userEvent.click(button)
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
+  })
+
   it('starts recording after Start session', async () => {
     const getUserMedia = vi.fn(async () => fakeStream())
     setSessionTestDeps({

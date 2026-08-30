@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { InstallCard } from '../components/InstallCard'
 import { hasApiKey } from '../openai'
 import { getSessionRuntime } from '../session'
 import type { Approach } from '../types'
@@ -49,6 +50,7 @@ export function Log({ approaches }: Props) {
   if (!snap.live) {
     return (
       <div className="screen log">
+        <InstallCard />
         <header className="screen-head">
           <p className="eyebrow">Study session</p>
           <h1>Log</h1>

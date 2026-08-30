@@ -3,10 +3,12 @@ import { cleanup } from '@testing-library/react'
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach } from 'vitest'
 import { db } from '../db'
+import { resetInstallPrompt } from '../install'
 import { resetSessionRuntime } from '../session'
 
 beforeEach(async () => {
   resetSessionRuntime()
+  resetInstallPrompt()
   localStorage.clear()
   try {
     await db.approaches.clear()

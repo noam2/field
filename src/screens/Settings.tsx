@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { InstallCard } from '../components/InstallCard'
 import { Overlay } from '../components/Overlay'
 import { Segmented } from '../components/Segmented'
 import { db, setLastPlace } from '../db'
@@ -225,8 +226,7 @@ export function Settings({ onClose }: Props) {
           </button>
 
           <p className="section-title">Home screen</p>
-          <p>iPhone: Share → Add to Home Screen.</p>
-          <p>Android: Install / Add to Home screen from the browser menu.</p>
+          <InstallCard compact dismissable={false} />
 
           <p className="section-title">Danger</p>
           {!confirmClear ? (

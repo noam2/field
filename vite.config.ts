@@ -10,10 +10,13 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png'],
       manifest: {
+        id: '/field/',
         name: 'Field',
         short_name: 'Field',
         description: 'Consented study recorder for conversations and location metadata',
         display: 'standalone',
+        orientation: 'portrait',
+        categories: ['utilities'],
         start_url: './',
         scope: './',
         theme_color: '#0b0b0c',

@@ -847,3 +847,35 @@ textarea:focus {
 .sent-neutral {
   color: var(--text-dim);
 }
+
+.install-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+}
+
+.install-card.is-compact {
+  padding: 14px;
+  border-color: var(--border);
+  background: var(--bg-card);
+}
+
+.install-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.install-dismiss {
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  flex-shrink: 0;
+  margin: -6px -8px 0 0;
+  color: var(--text-dim);
+}
