@@ -30,6 +30,7 @@ export const INSIGHT_JSON_SCHEMA = {
     valence: { type: 'number' },
     outcome: { type: 'string', enum: OUTCOMES },
     who: { type: 'string' },
+    scene: { type: 'string' },
     topics: { type: 'array', items: { type: 'string' } },
     commitments: { type: 'array', items: { type: 'string' } },
     objections: { type: 'array', items: { type: 'string' } },
@@ -52,6 +53,7 @@ export const INSIGHT_JSON_SCHEMA = {
     'valence',
     'outcome',
     'who',
+    'scene',
     'topics',
     'commitments',
     'objections',
@@ -74,7 +76,8 @@ const SYSTEM_PROMPT = [
   'You analyze a consented study-session conversation between enrolled participants.',
   'The transcript may be Hebrew, English, or mixed (code-switching). Hebrew+English mixing is normal.',
   'Extract structured fields only from the transcript. Do not invent facts, names, plans, or numbers.',
-  'Extract names in Hebrew and English (e.g. Maya, Noa).',
+  'who is extracted from the transcript only, Hebrew or English (e.g. Maya, Noa). Do not invent a name. Empty string if unknown.',
+  'scene is a short specific setting (about 2-5 words) taken from the transcript or the provided GPS place. Examples: "Landwer", "beach", "bar patio". Do not invent a venue name that is not in the transcript or the GPS place string. Empty string if nothing is clear.',
   'Contact signals include Instagram, WhatsApp, phone numbers, email, AND Hebrew: וואצאפ, נומר, אינסטגרם.',
   'Schedule signals include tomorrow, tonight, coffee, AND Hebrew: מחר, היום בערב, קופי, שבת.',
   'Rejection signals include not interested, I have a boyfriend, AND Hebrew: לא מעוניין, יש לי חבר, לא תודה.',
@@ -110,6 +113,7 @@ export function emptyInsight(model = UNDERSTAND_MODEL): Insight {
     valence: 0,
     outcome: 'other',
     who: '',
+    scene: '',
     topics: [],
     commitments: [],
     objections: [],
@@ -147,6 +151,7 @@ export function parseInsightJson(raw: unknown): Insight | null {
   }
   if (typeof v.outcome !== 'string' || !OUTCOMES.includes(v.outcome as Outcome)) return null
   if (typeof v.who !== 'string') return null
+  if (v.scene != null && typeof v.scene !== 'string') return null
   const topics = stringList(v.topics)
   const commitments = stringList(v.commitments)
   const objections = stringList(v.objections)
@@ -181,6 +186,7 @@ export function parseInsightJson(raw: unknown): Insight | null {
     valence: v.valence,
     outcome: v.outcome as Outcome,
     who: v.who,
+    scene: typeof v.scene === 'string' ? v.scene : '',
     topics,
     commitments,
     objections,

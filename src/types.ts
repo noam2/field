@@ -60,6 +60,7 @@ export type Insight = {
   valence: number
   outcome: Outcome
   who: string
+  scene: string
   topics: string[]
   commitments: string[]
   objections: string[]

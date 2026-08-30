@@ -1,3 +1,4 @@
+import { PLACE_TYPE_LABEL } from './place'
 import type { AnalysisSource, Approach, ApproachSource, Feel, Insight, Outcome, Session, TranscriptAnalysis } from './types'
 import { parseInsightJson } from './understand'
 
@@ -203,6 +204,44 @@ export function isAuto(a: { source?: ApproachSource }): boolean {
 export function eventLabel(a: Approach): string {
   if (a.source === 'auto') return 'Dwell'
   return OUTCOME_LABEL[a.outcome]
+}
+
+const TITLE_MAX = 42
+const UNKNOWN_PLACE_RE = /^unknown place$/i
+
+function shortGpsPlace(place: string): string {
+  for (const part of place.split(',')) {
+    const s = part.trim()
+    if (!s || UNKNOWN_PLACE_RE.test(s)) continue
+    return s
+  }
+  return ''
+}
+
+function conversationWhere(a: Approach): string {
+  const sceneWords = (a.insight?.scene ?? '').trim().split(/\s+/).filter(Boolean)
+  if (sceneWords.length) return sceneWords.slice(0, 5).join(' ')
+  const gps = shortGpsPlace(a.place)
+  if (gps) return gps
+  const pt = a.insight?.placeType
+  if (pt && pt !== 'other') return PLACE_TYPE_LABEL[pt]
+  return ''
+}
+
+/** Short headline: girl's name + place/scene. Never invents a name. */
+export function conversationTitle(a: Approach): string {
+  const who = (a.who.trim() || a.insight?.who?.trim() || '')
+  const where = conversationWhere(a)
+  if (who && where) {
+    const combined = `${who} · ${where}`
+    if (combined.length <= TITLE_MAX) return combined
+    const budget = TITLE_MAX - who.length - 3
+    if (budget >= 4) return `${who} · ${snippet(where, budget)}`
+    return snippet(who, TITLE_MAX)
+  }
+  if (who) return snippet(who, TITLE_MAX)
+  if (where) return snippet(where, TITLE_MAX)
+  return 'Conversation'
 }
 
 export function snippet(text: string, max = 90): string {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Overlay } from '../components/Overlay'
+import { ResetAllData } from '../components/ResetAllData'
 import { Segmented } from '../components/Segmented'
 import { db } from '../db'
 import { toast } from '../toast'
@@ -15,6 +16,7 @@ import {
   FEEL_LABEL,
   OUTCOME_LABEL,
   OUTCOMES,
+  conversationTitle,
   eventLabel,
   formatDayHeading,
   formatDuration,
@@ -44,9 +46,16 @@ export function History({ approaches }: Props) {
     return approaches.filter((a) => {
       if (outcome !== 'all' && a.outcome !== outcome) return false
       if (!needle) return true
-      return [a.who, a.place, a.notes, a.opener, a.transcript, a.insight?.summary].some((s) =>
-        (s ?? '').toLowerCase().includes(needle),
-      )
+      return [
+        a.who,
+        a.place,
+        a.notes,
+        a.opener,
+        a.transcript,
+        a.insight?.who,
+        a.insight?.scene,
+        a.insight?.summary,
+      ].some((s) => (s ?? '').toLowerCase().includes(needle))
     })
   }, [approaches, q, outcome])
 
@@ -137,11 +146,8 @@ export function History({ approaches }: Props) {
                   setEditing(false)
                 }}
               >
-                <span className="hist-who" dir="auto">{row.who.trim() || row.place || 'Conversation'}</span>
+                <span className="hist-who" dir="auto">{conversationTitle(row)}</span>
                 <span className="muted">{formatTime(row.at)}</span>
-                {row.who.trim() ? (
-                  <span className="hist-place" dir="auto">{row.place}</span>
-                ) : null}
                 <span className="hist-summary" dir="auto">
                   {row.analysisSource === 'pending'
                     ? 'Understanding…'
@@ -163,8 +169,13 @@ export function History({ approaches }: Props) {
         ))
       )}
 
+      <div className="hist-danger">
+        <p className="section-title">Danger</p>
+        <ResetAllData />
+      </div>
+
       {selected && (
-        <Overlay title={editing ? 'Edit' : eventLabel(selected)} onClose={closeDetail}>
+        <Overlay title={editing ? 'Edit' : conversationTitle(selected)} onClose={closeDetail}>
           {editing ? (
             <EditForm row={selected} onCancel={() => setEditing(false)} onSaved={() => setEditing(false)} />
           ) : (

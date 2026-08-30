@@ -14,7 +14,7 @@ export function Overlay({ title, onClose, children }: Props) {
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
           <IconClose />
         </button>
-        <h2 id="overlay-title">{title}</h2>
+        <h2 id="overlay-title" dir="auto">{title}</h2>
         <span />
       </header>
       <div className="overlay-body">{children}</div>

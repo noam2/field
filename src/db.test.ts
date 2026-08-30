@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, getLastPlace, setLastPlace } from './db'
+import { getSpeechLang, setSpeechLang } from './lang'
+import { getApiKey, setApiKey } from './openai'
+import { resetAllData } from './reset'
 import { approach } from './test/helpers'
 
 beforeEach(async () => {
@@ -84,5 +87,29 @@ describe('db sessions and recordings', () => {
     expect(clip?.conversationId).toBe(conversationId)
     expect(clip?.mimeType).toBe("audio/webm")
     expect(clip?.blob).toBeTruthy()
+  })
+})
+
+describe('resetAllData', () => {
+  it('clears encounter stores and lastPlace, keeps api key and speech lang', async () => {
+    setApiKey('sk-keep')
+    setSpeechLang('he')
+    setLastPlace('Bar')
+    await db.approaches.add(approach({ place: 'Bar' }))
+    await db.sessions.add({ id: 's', startedAt: new Date().toISOString(), endedAt: null })
+    await db.audioClips.add({
+      id: 'a',
+      conversationId: 'c',
+      blob: new Blob(['x']),
+      mimeType: 'audio/webm',
+      createdAt: new Date().toISOString(),
+    })
+    await resetAllData()
+    expect(await db.approaches.count()).toBe(0)
+    expect(await db.sessions.count()).toBe(0)
+    expect(await db.audioClips.count()).toBe(0)
+    expect(getLastPlace()).toBe('')
+    expect(getApiKey()).toBe('sk-keep')
+    expect(getSpeechLang()).toBe('he')
   })
 })

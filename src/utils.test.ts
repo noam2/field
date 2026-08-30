@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { approach } from './test/helpers'
+import type { Insight } from './types'
+import { emptyInsight } from './understand'
 import {
   addDays,
   computeStreak,
+  conversationTitle,
   daysSinceLast,
   fromDatetimeLocalValue,
   isApproach,
@@ -144,5 +147,114 @@ describe('fromDatetimeLocalValue', () => {
     expect(back.getDate()).toBe(d.getDate())
     expect(back.getHours()).toBe(d.getHours())
     expect(back.getMinutes()).toBe(d.getMinutes())
+  })
+})
+
+function ins(over: Partial<Insight> = {}): Insight {
+  return { ...emptyInsight(), ...over }
+}
+
+describe('conversationTitle', () => {
+  it('name + place', () => {
+    expect(
+      conversationTitle(approach({ who: 'Maya', place: 'Landwer Café, Dizengoff, Tel Aviv' })),
+    ).toBe('Maya · Landwer Café')
+  })
+
+  it('name only', () => {
+    expect(conversationTitle(approach({ who: 'Maya', place: 'Unknown place' }))).toBe('Maya')
+  })
+
+  it('place only', () => {
+    expect(conversationTitle(approach({ who: '', place: 'Landwer, Tel Aviv' }))).toBe('Landwer')
+  })
+
+  it('unknown is Conversation', () => {
+    expect(conversationTitle(approach({ who: '', place: 'Unknown place' }))).toBe('Conversation')
+    expect(conversationTitle(approach({ who: '  ', place: '' }))).toBe('Conversation')
+  })
+
+  it('scene beats generic place', () => {
+    expect(
+      conversationTitle(
+        approach({
+          who: 'Maya',
+          place: 'Dizengoff Street, Tel Aviv, Israel',
+          insight: ins({ scene: 'beach bar' }),
+        }),
+      ),
+    ).toBe('Maya · beach bar')
+  })
+
+  it('uses insight.who when approach.who is empty', () => {
+    expect(
+      conversationTitle(
+        approach({
+          who: '',
+          place: 'Landwer',
+          insight: ins({ who: 'Maya' }),
+        }),
+      ),
+    ).toBe('Maya · Landwer')
+  })
+
+  it('never invents a name', () => {
+    const t = conversationTitle(
+      approach({
+        who: '',
+        place: 'Cafe X',
+        insight: ins({ who: '', scene: 'Cafe X' }),
+      }),
+    )
+    expect(t).toBe('Cafe X')
+    expect(t.toLowerCase()).not.toMatch(/\b(maya|noa|sarah|anna|girl)\b/)
+  })
+
+  it('keeps Hebrew name and scene', () => {
+    expect(
+      conversationTitle(
+        approach({
+          who: 'מאיה',
+          place: '',
+          insight: ins({ scene: 'הספרייה' }),
+        }),
+      ),
+    ).toBe('מאיה · הספרייה')
+  })
+
+  it('uses placeType label when GPS place is unknown', () => {
+    expect(
+      conversationTitle(
+        approach({
+          who: 'Maya',
+          place: 'Unknown place',
+          insight: ins({ placeType: 'cafe' }),
+        }),
+      ),
+    ).toBe('Maya · Cafe')
+  })
+
+  it('does not use Other placeType', () => {
+    expect(
+      conversationTitle(
+        approach({
+          who: '',
+          place: '',
+          insight: ins({ placeType: 'other' }),
+        }),
+      ),
+    ).toBe('Conversation')
+  })
+
+  it('stays short around 42 chars without inventing a name', () => {
+    const t = conversationTitle(
+      approach({
+        who: 'Maya',
+        place: 'The International Convention Center for Peace and Dialogue, Jerusalem, Israel',
+      }),
+    )
+    expect(t.startsWith('Maya · ')).toBe(true)
+    expect(t.length).toBeLessThanOrEqual(42)
+    expect(t).not.toMatch(/Sarah|Noa/)
   })
 })

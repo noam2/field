@@ -603,6 +603,10 @@ textarea:focus {
   font-size: 13px;
 }
 
+.hist-danger {
+  margin-top: 8px;
+}
+
 .overlay {
   position: fixed;
   inset: 0;

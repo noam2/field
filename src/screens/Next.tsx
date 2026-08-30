@@ -15,6 +15,7 @@ import type { Approach } from '../types'
 import {
   OUTCOME_LABEL,
   addDays,
+  conversationTitle,
   formatFull,
   formatShortDate,
   nowISO,
@@ -37,13 +38,13 @@ export function Next({ approaches }: Props) {
     [approaches, dueIds],
   )
   const commitments = useMemo(() => {
-    const rows: { id: string; who: string; place: string; text: string }[] = []
+    const rows: { id: string; title: string; place: string; text: string }[] = []
     for (const a of approaches) {
       if (dueIds.has(a.id)) continue
       const next = a.insight?.nextAction?.trim()
       for (const c of approachCommitments(a)) {
         if (next && c.toLowerCase() === next.toLowerCase()) continue
-        rows.push({ id: `${a.id}:${c}`, who: a.who || a.insight?.who || '', place: a.place, text: c })
+        rows.push({ id: `${a.id}:${c}`, title: conversationTitle(a), place: a.place, text: c })
       }
     }
     return rows.slice(0, 12)
@@ -84,14 +85,17 @@ export function Next({ approaches }: Props) {
       {suggestions.length > 0 && (
         <>
           <p className="section-title">Suggested</p>
-          {suggestions.map((s) => (
-            <SignalCard
-              key={`s-${s.id}`}
-              title={s.who.trim() || s.place || 'Conversation'}
-              body={s.suggestion}
-              meta={s.place}
-            />
-          ))}
+          {suggestions.map((s) => {
+            const row = approaches.find((a) => a.id === s.id)
+            return (
+              <SignalCard
+                key={`s-${s.id}`}
+                title={row ? conversationTitle(row) : s.who.trim() || s.place || 'Conversation'}
+                body={s.suggestion}
+                meta={s.place}
+              />
+            )
+          })}
         </>
       )}
 
@@ -101,7 +105,7 @@ export function Next({ approaches }: Props) {
           {unused.map((row) => (
             <SignalCard
               key={`u-${row.id}`}
-              title={row.who.trim() || 'Unknown'}
+              title={conversationTitle(row)}
               body={
                 row.insight?.nextAction?.trim() ||
                 row.insight?.followUpSuggestion?.trim() ||
@@ -119,7 +123,7 @@ export function Next({ approaches }: Props) {
           {commitments.map((c) => (
             <SignalCard
               key={c.id}
-              title={c.who.trim() || c.place || 'Conversation'}
+              title={c.title}
               body={c.text}
               meta={c.place}
             />
@@ -214,7 +218,7 @@ function FollowCard({ row }: { row: Approach }) {
   return (
     <article className="card">
       <p className="card-title" dir="auto">
-        {row.who.trim() || 'Unknown'}
+        {conversationTitle(row)}
       </p>
       {action ? (
         <p className="card-next" dir="auto">

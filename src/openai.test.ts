@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSpeechLang } from './lang'
 import { getApiKey, hasApiKey, openaiHeaders, setApiKey } from './openai'
 import { transcribeAudio } from './transcribe'
-import { parseInsightJson, parseProofJson, understandTranscript } from './understand'
+import { INSIGHT_JSON_SCHEMA, parseInsightJson, parseProofJson, understandTranscript } from './understand'
 
 const VALID = {
   sentiment: 'positive',
@@ -71,6 +71,16 @@ describe('parseInsightJson', () => {
     const parsed = parseInsightJson(VALID)
     expect(parsed?.whatWorked).toBe('')
     expect(parsed?.nextAction).toBe('')
+  })
+
+  it('parses scene and defaults missing scene to empty', () => {
+    expect(parseInsightJson({ ...VALID, scene: 'beach bar' })?.scene).toBe('beach bar')
+    expect(parseInsightJson(VALID)?.scene).toBe('')
+  })
+
+  it('requires scene on the strict schema', () => {
+    expect(INSIGHT_JSON_SCHEMA.properties.scene).toEqual({ type: 'string' })
+    expect(INSIGHT_JSON_SCHEMA.required).toContain('scene')
   })
 
   it('rejects garbage, valence 4, and bad sentiment', () => {

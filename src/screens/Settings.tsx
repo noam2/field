@@ -2,7 +2,8 @@ import { useRef, useState } from 'react'
 import { InstallCard } from '../components/InstallCard'
 import { Overlay } from '../components/Overlay'
 import { Segmented } from '../components/Segmented'
-import { db, setLastPlace } from '../db'
+import { ResetAllData } from '../components/ResetAllData'
+import { db } from '../db'
 import { getKeepAlive, getSpeechLang, setKeepAlive, setSpeechLang } from '../lang'
 import {
   getIdleStopMs,
@@ -25,7 +26,6 @@ type Props = { onClose: () => void }
 
 export function Settings({ onClose }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [confirmClear, setConfirmClear] = useState(false)
   const [busy, setBusy] = useState(false)
   const [manual, setManual] = useState(false)
   const [keyDraft, setKeyDraft] = useState(() => getApiKey())
@@ -80,16 +80,6 @@ export function Settings({ onClose }: Props) {
       setBusy(false)
       if (fileRef.current) fileRef.current.value = ''
     }
-  }
-
-  async function clearAll() {
-    if (getSessionRuntime().isLive()) await getSessionRuntime().stop()
-    await db.approaches.clear()
-    await db.sessions.clear()
-    await db.audioClips.clear()
-    setLastPlace('')
-    setConfirmClear(false)
-    toast('All data cleared')
   }
 
   return (
@@ -272,23 +262,7 @@ export function Settings({ onClose }: Props) {
           <InstallCard compact dismissable={false} />
 
           <p className="section-title">Danger</p>
-          {!confirmClear ? (
-            <button type="button" className="btn-danger" onClick={() => setConfirmClear(true)}>
-              Clear all
-            </button>
-          ) : (
-            <div className="card">
-              <p className="warn">This deletes every conversation, session, and audio clip on this device.</p>
-              <div className="card-actions">
-                <button type="button" className="btn-danger" onClick={() => void clearAll()}>
-                  Confirm delete
-                </button>
-                <button type="button" className="btn-ghost" onClick={() => setConfirmClear(false)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
+          <ResetAllData />
         </div>
       )}
     </Overlay>
