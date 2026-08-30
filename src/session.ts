@@ -1,6 +1,7 @@
 import { analyzeTranscript, extractIntroName, tomorrowIso } from './analyze'
 import { db } from './db'
 import { getKeepAlive, speechRecognitionLang } from './lang'
+import { getIdleStopMs, getPauseMs } from './timing'
 import { hasApiKey } from './openai'
 import { mergePlaceSignals } from './place'
 import { toast } from './toast'
@@ -193,6 +194,7 @@ export function shouldIdleStop(
   now: number,
   idleMs = IDLE_STOP_MS,
 ): boolean {
+  if (idleMs <= 0) return false
   const last = lastSpeechAt ?? startedAtMs
   if (last == null) return false
   return now - last >= idleMs
@@ -568,18 +570,20 @@ export class SessionRuntime {
 
   checkSilence(at = this.now()): boolean {
     if (!this.snapshot.live) return false
-    if (!shouldSplitConversation(this.lastSpeechAt, at)) return false
+    if (!shouldSplitConversation(this.lastSpeechAt, at, getPauseMs())) return false
     void this.closeConversation()
     return true
   }
 
   async checkIdleStop(at = this.now()): Promise<boolean> {
     if (!this.snapshot.live || this.idleStopping) return false
-    if (!shouldIdleStop(this.lastActivityAt, this.snapshot.startedAtMs, at)) return false
+    const idleMs = getIdleStopMs()
+    if (!shouldIdleStop(this.lastActivityAt, this.snapshot.startedAtMs, at, idleMs)) return false
     this.idleStopping = true
     try {
       await this.stop()
-      toast('Stopped — no speech for 10 minutes.')
+      const minutes = Math.round(idleMs / 60_000)
+      toast(`Stopped — no speech for ${minutes} minutes.`)
       return true
     } finally {
       this.idleStopping = false
@@ -985,7 +989,7 @@ export class SessionRuntime {
     this.clearSilenceTimer()
     this.silenceTimer = setTimeout(() => {
       this.checkSilence()
-    }, SILENCE_MS)
+    }, getPauseMs())
   }
 
   private clearSilenceTimer(): void {

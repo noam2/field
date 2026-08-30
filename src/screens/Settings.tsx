@@ -4,6 +4,16 @@ import { Overlay } from '../components/Overlay'
 import { Segmented } from '../components/Segmented'
 import { db, setLastPlace } from '../db'
 import { getKeepAlive, getSpeechLang, setKeepAlive, setSpeechLang } from '../lang'
+import {
+  getIdleStopMs,
+  getPauseMs,
+  IDLE_STOP_MS_LABEL,
+  IDLE_STOP_MS_OPTIONS,
+  PAUSE_MS_LABEL,
+  PAUSE_MS_OPTIONS,
+  setIdleStopMs,
+  setPauseMs,
+} from '../timing'
 import { getApiKey, hasApiKey, setApiKey } from '../openai'
 import { getSessionRuntime, startKeepAlive, stopKeepAlive } from '../session'
 import { toast } from '../toast'
@@ -23,6 +33,8 @@ export function Settings({ onClose }: Props) {
   const [testing, setTesting] = useState(false)
   const [speechLang, setSpeechLangUi] = useState<SpeechLangPref>(() => getSpeechLang())
   const [keepAlive, setKeepAliveUi] = useState(() => getKeepAlive())
+  const [pauseMs, setPauseMsUi] = useState(() => getPauseMs())
+  const [idleStopMs, setIdleStopMsUi] = useState(() => getIdleStopMs())
 
   async function exportJson() {
     const approaches = await db.approaches.toArray()
@@ -140,6 +152,37 @@ export function Settings({ onClose }: Props) {
             Android can keep the mic with the screen off. iPhone Safari stops audio when you leave
             Field — keep the app on screen.
           </p>
+
+          <p className="section-title">Recording</p>
+          <Segmented
+            name="pause-ms"
+            legend="New conversation after pause"
+            value={String(pauseMs)}
+            onChange={(v) => {
+              const n = Number(v)
+              setPauseMs(n)
+              setPauseMsUi(getPauseMs())
+            }}
+            options={PAUSE_MS_OPTIONS.map((ms) => ({
+              value: String(ms),
+              label: PAUSE_MS_LABEL[ms],
+            }))}
+          />
+          <Segmented
+            name="idle-stop-ms"
+            legend="Stop recording after silence"
+            value={String(idleStopMs)}
+            onChange={(v) => {
+              const n = Number(v)
+              setIdleStopMs(n)
+              setIdleStopMsUi(getIdleStopMs())
+            }}
+            options={IDLE_STOP_MS_OPTIONS.map((ms) => ({
+              value: String(ms),
+              label: IDLE_STOP_MS_LABEL[ms],
+            }))}
+          />
+          <p className="muted">Pause starts a new conversation. Silence can stop the session.</p>
 
           <p className="section-title">OpenAI</p>
           <label className="field">

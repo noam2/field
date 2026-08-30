@@ -16,6 +16,7 @@ import {
   stopKeepAlive,
 } from './session'
 import * as understand from './understand'
+import { setIdleStopMs, setPauseMs } from './timing'
 
 beforeEach(async () => {
   resetSessionRuntime()
@@ -54,6 +55,12 @@ describe('shouldSplitConversation', () => {
   it('SILENCE_MS is 60000', () => {
     expect(SILENCE_MS).toBe(60_000)
   })
+
+  it('custom gapMs 30000 splits at 30s not 60s', () => {
+    expect(shouldSplitConversation(0, 29_999, 30_000)).toBe(false)
+    expect(shouldSplitConversation(0, 30_000, 30_000)).toBe(true)
+    expect(shouldSplitConversation(0, 59_000, 30_000)).toBe(true)
+  })
 })
 
 describe('shouldIdleStop', () => {
@@ -71,6 +78,12 @@ describe('shouldIdleStop', () => {
     const speech = 60_000
     expect(shouldIdleStop(speech, start, 10 * 60 * 1000)).toBe(false)
     expect(shouldIdleStop(speech, start, 11 * 60 * 1000)).toBe(true)
+  })
+
+  it('idleMs 0 never stops', () => {
+    expect(shouldIdleStop(null, 0, 0, 0)).toBe(false)
+    expect(shouldIdleStop(null, 0, 1_000_000, 0)).toBe(false)
+    expect(shouldIdleStop(60_000, 0, 1_000_000, 0)).toBe(false)
   })
 })
 
@@ -521,6 +534,47 @@ describe('SessionRuntime', () => {
     expect(rt.getSnapshot().phase).toBe('live')
     await rt.stop()
     expect(rt.getSnapshot().phase).toBe('idle')
+    setToastListener(null)
+  })
+
+  it('checkSilence uses pauseMs pref: true at 30s not 29s', async () => {
+    setPauseMs(30_000)
+    let now = 0
+    const rt = runtime(() => now)
+    await rt.start()
+    now = 10_000
+    rt.ingestSpeech('hello there how is the week going for you today really?', true, now)
+    now = 10_000 + 29_000
+    expect(rt.checkSilence(now)).toBe(false)
+    now = 10_000 + 30_000
+    expect(rt.checkSilence(now)).toBe(true)
+    await rt.stop()
+  })
+
+  it('checkIdleStop never true when idleStop is Off', async () => {
+    setIdleStopMs(0)
+    let now = 0
+    const rt = runtime(() => now)
+    await rt.start()
+    now = 60 * 60 * 1000
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    expect(rt.getSnapshot().phase).toBe('live')
+    await rt.stop()
+  })
+
+  it('idle-stops after 5 minutes when pref is 5min', async () => {
+    setIdleStopMs(5 * 60 * 1000)
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    let now = 1_000
+    const rt = runtime(() => now)
+    await rt.start()
+    now = 1_000 + 5 * 60 * 1000 - 1
+    expect(await rt.checkIdleStop(now)).toBe(false)
+    now = 1_000 + 5 * 60 * 1000
+    expect(await rt.checkIdleStop(now)).toBe(true)
+    expect(rt.getSnapshot().phase).toBe('idle')
+    expect(toasts).toContain('Stopped — no speech for 5 minutes.')
     setToastListener(null)
   })
 })
