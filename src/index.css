@@ -486,6 +486,19 @@ select:focus {
   margin-top: 12px;
 }
 
+.voice-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.voice-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

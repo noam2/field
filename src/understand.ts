@@ -43,7 +43,7 @@ export const INSIGHT_JSON_SCHEMA = {
     exchangedContact: { type: 'boolean' },
     scheduled: { type: 'boolean' },
     rejection: { type: 'boolean' },
-    isApproach: { type: 'boolean' },
+    isPickupAttempt: { type: 'boolean' },
     placeType: { type: 'string', enum: PLACE_TYPES },
     daypart: { type: 'string', enum: DAYPARTS },
     language: { type: 'string', enum: SPOKEN_LANGUAGES },
@@ -67,14 +67,14 @@ export const INSIGHT_JSON_SCHEMA = {
     'exchangedContact',
     'scheduled',
     'rejection',
-    'isApproach',
+    'isPickupAttempt',
     'placeType',
     'daypart',
     'language',
   ],
 } as const
 
-const SYSTEM_PROMPT = [
+export const UNDERSTAND_SYSTEM_PROMPT = [
   'You analyze a consented study-session conversation between enrolled participants.',
   'The transcript may be Hebrew, English, or mixed (code-switching). Hebrew+English mixing is normal.',
   'Extract structured fields only from the transcript. Do not invent facts, names, plans, or numbers.',
@@ -92,10 +92,11 @@ const SYSTEM_PROMPT = [
   'placeType is the venue category.',
   'daypart is morning, afternoon, evening, or night.',
   'language is he, en, or mixed based on the transcript.',
-  'isApproach is true ONLY if this is the study participant (phone wearer) in a real conversation approaching / talking with a woman.',
-  'isApproach is false for: ambient crowd, walking past, other people talking to each other, TV, no wearer speech, not a social approach.',
-  'Do not invent. If unsure, isApproach is false.',
-  'If the transcript is empty, sentiment is neutral, success is false, isApproach is false, whatWorked and nextAction are empty, and summary says no speech was captured.',
+  'isPickupAttempt is true ONLY if the wearer is initiating or continuing a romantic approach / hitting on a woman (flirting, asking out, getting a number, expressing romantic interest).',
+  'Talking with a woman alone is NOT enough; it must be a dating/pickup attempt.',
+  'isPickupAttempt is false for: casual chat with a woman with no romantic approach, friends, coworkers, service interactions, crowd, pass-by, only the wearer talking to himself, unsure.',
+  'Do not invent. If unsure, isPickupAttempt is false.',
+  'If the transcript is empty, sentiment is neutral, success is false, isPickupAttempt is false, whatWorked and nextAction are empty, and summary says no speech was captured.',
 ].join(' ')
 
 const PROOF_PROMPT = [
@@ -131,7 +132,7 @@ export function emptyInsight(model = UNDERSTAND_MODEL): Insight {
     exchangedContact: false,
     scheduled: false,
     rejection: false,
-    isApproach: false,
+    isPickupAttempt: false,
     model,
     placeType: 'other',
     daypart: 'afternoon',
@@ -173,8 +174,14 @@ export function parseInsightJson(raw: unknown): Insight | null {
   if (typeof v.exchangedContact !== 'boolean') return null
   if (typeof v.scheduled !== 'boolean') return null
   if (typeof v.rejection !== 'boolean') return null
+  if (v.isPickupAttempt != null && typeof v.isPickupAttempt !== 'boolean') return null
   if (v.isApproach != null && typeof v.isApproach !== 'boolean') return null
-  const isApproach = typeof v.isApproach === 'boolean' ? v.isApproach : false
+  const isPickupAttempt =
+    typeof v.isPickupAttempt === 'boolean'
+      ? v.isPickupAttempt
+      : typeof v.isApproach === 'boolean'
+        ? v.isApproach
+        : false
   const model = typeof v.model === 'string' ? v.model : ''
   const placeType =
     typeof v.placeType === 'string' && PLACE_TYPES.includes(v.placeType as PlaceType)
@@ -207,7 +214,7 @@ export function parseInsightJson(raw: unknown): Insight | null {
     exchangedContact: v.exchangedContact,
     scheduled: v.scheduled,
     rejection: v.rejection,
-    isApproach,
+    isPickupAttempt,
     model,
     placeType,
     daypart,
@@ -281,7 +288,7 @@ export async function understandTranscript(text: string, ctx: UnderstandContext)
         },
       },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: UNDERSTAND_SYSTEM_PROMPT },
         {
           role: 'user',
           content: JSON.stringify({

@@ -1,10 +1,11 @@
 import Dexie, { type Table } from 'dexie'
-import type { Approach, AudioClip, Session } from './types'
+import type { Approach, AudioClip, Session, VoiceProfile } from './types'
 
 class FieldDB extends Dexie {
   approaches!: Table<Approach, string>
   sessions!: Table<Session, string>
   audioClips!: Table<AudioClip, string>
+  voiceProfile!: Table<VoiceProfile, string>
 
   constructor() {
     super('field')
@@ -118,6 +119,12 @@ class FieldDB extends Dexie {
             }
           })
       })
+    this.version(8).stores({
+      approaches: 'id, at, place, who, outcome, followUpAt, createdAt, sessionId, source',
+      sessions: 'id, startedAt',
+      audioClips: 'id, conversationId, createdAt',
+      voiceProfile: 'id',
+    })
   }
 }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSpeechLang } from './lang'
 import { getApiKey, hasApiKey, openaiHeaders, setApiKey } from './openai'
 import { transcribeAudio } from './transcribe'
-import { emptyInsight, INSIGHT_JSON_SCHEMA, parseInsightJson, parseProofJson, understandTranscript } from './understand'
+import { emptyInsight, INSIGHT_JSON_SCHEMA, parseInsightJson, parseProofJson, UNDERSTAND_SYSTEM_PROMPT, understandTranscript } from './understand'
 
 const VALID = {
   sentiment: 'positive',
@@ -20,7 +20,7 @@ const VALID = {
   exchangedContact: true,
   scheduled: false,
   rejection: false,
-  isApproach: true,
+  isPickupAttempt: true,
   model: 'gpt-4o-mini',
 }
 
@@ -84,19 +84,25 @@ describe('parseInsightJson', () => {
     expect(INSIGHT_JSON_SCHEMA.required).toContain('scene')
   })
 
-  it('requires isApproach on the schema and parses true/false', () => {
-    expect(INSIGHT_JSON_SCHEMA.properties.isApproach).toEqual({ type: 'boolean' })
-    expect(INSIGHT_JSON_SCHEMA.required).toContain('isApproach')
-    expect(parseInsightJson(VALID)?.isApproach).toBe(true)
-    expect(parseInsightJson({ ...VALID, isApproach: false })?.isApproach).toBe(false)
+  it('requires isPickupAttempt on the schema and parses true/false', () => {
+    expect(INSIGHT_JSON_SCHEMA.properties.isPickupAttempt).toEqual({ type: 'boolean' })
+    expect(INSIGHT_JSON_SCHEMA.required).toContain('isPickupAttempt')
+    expect(parseInsightJson(VALID)?.isPickupAttempt).toBe(true)
+    expect(parseInsightJson({ ...VALID, isPickupAttempt: false })?.isPickupAttempt).toBe(false)
     const missing = { ...VALID } as Record<string, unknown>
-    delete missing.isApproach
-    expect(parseInsightJson(missing)?.isApproach).toBe(false)
-    expect(parseInsightJson({ ...VALID, isApproach: 'yes' })).toBeNull()
+    delete missing.isPickupAttempt
+    expect(parseInsightJson(missing)?.isPickupAttempt).toBe(false)
+    expect(parseInsightJson({ ...VALID, isPickupAttempt: 'yes' })).toBeNull()
   })
 
-  it('emptyInsight has isApproach false', () => {
-    expect(emptyInsight().isApproach).toBe(false)
+  it('emptyInsight has isPickupAttempt false', () => {
+    expect(emptyInsight().isPickupAttempt).toBe(false)
+  })
+
+  it('talking with a woman alone is not a pickup attempt', () => {
+    expect(UNDERSTAND_SYSTEM_PROMPT).toMatch(/isPickupAttempt/)
+    expect(UNDERSTAND_SYSTEM_PROMPT).toMatch(/NOT enough/)
+    expect(UNDERSTAND_SYSTEM_PROMPT).toMatch(/dating\/pickup|hitting on/i)
   })
 
   it('rejects garbage, valence 4, and bad sentiment', () => {

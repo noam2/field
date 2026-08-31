@@ -32,6 +32,7 @@ import {
 import * as understand from './understand'
 import * as transcribe from './transcribe'
 import { setIdleStopMs, setPauseMs } from './timing'
+import { ENROLL_TOAST, setVoiceTestHooks } from './voice'
 
 const KEEP_TALK = "Hey I'm Maya. What do you do? Here's my number 555-867-5309."
 
@@ -61,6 +62,7 @@ beforeEach(async () => {
   await db.approaches.clear()
   await db.sessions.clear()
   await db.audioClips.clear()
+  await db.voiceProfile.clear()
 })
 
 describe('shouldSplitConversation', () => {
@@ -361,7 +363,7 @@ describe('SessionRuntime', () => {
       exchangedContact: true,
       scheduled: false,
       rejection: false,
-      isApproach: true,
+      isPickupAttempt: true,
       model: 'gpt-4o-mini',
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1210,12 +1212,12 @@ describe('clip keep gate + near-field energy', () => {
     expect(await db.audioClips.count()).toBe(1)
   })
 
-  it('drops the approach when GPT says isApproach false', async () => {
+  it('drops the approach when GPT says isPickupAttempt false', async () => {
     setApiKey('sk-test-field')
     vi.spyOn(transcribe, 'transcribeAudio').mockResolvedValue(KEEP_TALK)
     vi.spyOn(understand, 'understandTranscript').mockResolvedValue({
       ...understand.emptyInsight(),
-      isApproach: false,
+      isPickupAttempt: false,
       summary: 'Ambient crowd, not an approach.',
     })
     const toasts: string[] = []
@@ -1232,5 +1234,90 @@ describe('clip keep gate + near-field energy', () => {
     expect(toasts).not.toContain('Could not understand this conversation')
     expect(toasts.filter((t) => /drop|crowd|approach/i.test(t))).toEqual([])
     setToastListener(null)
+  })
+
+  it('does not write a row when voice is not enrolled', async () => {
+    setVoiceTestHooks({ enrolled: false, match: true })
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(await db.approaches.count()).toBe(0)
+    expect(await db.audioClips.count()).toBe(0)
+    expect(toasts).toContain(ENROLL_TOAST)
+    setToastListener(null)
+  })
+
+  it('toasts enroll once when several clips close without enrollment', async () => {
+    setVoiceTestHooks({ enrolled: false, match: true })
+    setPauseMs(10_000)
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    let now = 1_000
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    const rt = new SessionRuntime({
+      now: () => now,
+      getUserMedia: vi.fn(async () => fakeStream()),
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    now += 12_000
+    expect(rt.checkSilence(now)).toBe(true)
+    await rt.waitForBackground()
+    now += 1_000
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    now += 12_000
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(await db.approaches.count()).toBe(0)
+    expect(toasts.filter((m) => m === ENROLL_TOAST)).toHaveLength(1)
+    setToastListener(null)
+  })
+
+  it('does not write a row when voiceMatch is false', async () => {
+    setVoiceTestHooks({ enrolled: true, match: false })
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(await db.approaches.count()).toBe(0)
+    expect(await db.audioClips.count()).toBe(0)
+  })
+
+  it('keeps the row when voice matches and GPT says isPickupAttempt true', async () => {
+    setVoiceTestHooks({ enrolled: true, match: true })
+    setApiKey('sk-test-field')
+    vi.spyOn(transcribe, 'transcribeAudio').mockResolvedValue(KEEP_TALK)
+    vi.spyOn(understand, 'understandTranscript').mockResolvedValue({
+      ...understand.emptyInsight(),
+      isPickupAttempt: true,
+      who: 'Maya',
+      summary: 'Asked Maya out and got her number.',
+    })
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(await db.approaches.count()).toBe(1)
+    expect(await db.audioClips.count()).toBe(1)
+    expect((await db.approaches.toCollection().first())?.insight?.isPickupAttempt).toBe(true)
   })
 })

@@ -8,6 +8,19 @@ import { approach } from '../test/helpers'
 import { getIdleStopMs, getPauseMs, IDLE_STOP_MS_STORAGE, PAUSE_MS_STORAGE, setPauseMs } from '../timing'
 import { Settings } from './Settings'
 
+describe('Settings My voice', () => {
+  it('shows the My voice section', () => {
+    render(<Settings onClose={() => {}} />)
+    expect(screen.getByText('My voice')).toBeInTheDocument()
+    expect(screen.getByText('Not enrolled')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Record my voice' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Clear voice' })).toBeInTheDocument()
+    expect(
+      screen.getByText('Say a few sentences in your normal voice. Used only on this phone to match you.'),
+    ).toBeInTheDocument()
+  })
+})
+
 describe('Settings recording timing', () => {
   it('renders the two recording legends', () => {
     render(<Settings onClose={() => {}} />)

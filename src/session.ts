@@ -16,6 +16,12 @@ import { toast } from './toast'
 import { transcribeAudio } from './transcribe'
 import { proofTranscript, understandTranscript } from './understand'
 import { formatCoordPlace, nowISO } from './utils'
+import {
+  hasVoiceEnrollment,
+  noteMissingEnrollment,
+  resetEnrollmentToast,
+  voiceMatch,
+} from './voice'
 import type { Approach, SpokenLanguage, UnderstandContext } from './types'
 
 export { NEAR_FIELD_RMS, ENERGY_SAMPLE_SEC, LOUD_OPEN_SEC } from './clipGate'
@@ -574,6 +580,7 @@ export class SessionRuntime {
     this.startIdleWatch()
     applyMediaSession('playing')
     if (getKeepAlive()) startKeepAlive()
+    resetEnrollmentToast()
   }
 
   private conversationCountReset(): void {
@@ -846,14 +853,20 @@ export class SessionRuntime {
     if (!convId || startedMs == null) return
     const durationSec = Math.max(0, Math.round((this.now() - startedMs) / 1000))
     const wordCount = clipWordCount(combined)
+    const mime = this.mime || 'audio/webm'
+    const blob = chunks.length > 0 ? new Blob(chunks, { type: mime }) : null
     if (!shouldKeepClip({ durationSec, wordCount, loudSec })) return
 
     const run = async () => {
+      if (!(await hasVoiceEnrollment())) {
+        noteMissingEnrollment()
+        return
+      }
+      if (!blob || blob.size === 0) return
+      if (!(await voiceMatch(blob))) return
       const analysis = analyzeTranscript(combined, durationSec)
       const who = extractIntroName(combined) ?? ''
-      const mime = this.mime || 'audio/webm'
-      const blob = chunks.length > 0 ? new Blob(chunks, { type: mime }) : null
-      const audioId = blob && blob.size > 0 ? crypto.randomUUID() : null
+      const audioId = blob.size > 0 ? crypto.randomUUID() : null
       if (audioId && blob) {
         await db.audioClips.add({
           id: audioId,
@@ -951,7 +964,7 @@ export class SessionRuntime {
       const raw = await understandTranscript(text, ctx)
       const existing = await db.approaches.get(id)
       if (!existing) return
-      if (raw.isApproach === false) {
+      if (raw.isPickupAttempt === false) {
         await db.approaches.delete(id)
         if (existing.audioId) await db.audioClips.delete(existing.audioId)
         await db.audioClips.where('conversationId').equals(id).delete()

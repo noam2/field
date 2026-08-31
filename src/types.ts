@@ -73,7 +73,7 @@ export type Insight = {
   exchangedContact: boolean
   scheduled: boolean
   rejection: boolean
-  isApproach: boolean
+  isPickupAttempt: boolean
   model: string
   placeType?: PlaceType
   daypart?: Daypart
@@ -119,6 +119,13 @@ export type AudioClip = {
   blob: Blob
   mimeType: string
   createdAt: string
+}
+
+export type VoiceProfile = {
+  id: string
+  embedding: number[]
+  createdAt: string
+  audio?: Blob
 }
 
 export type Tab = 'log' | 'next' | 'stats' | 'history'

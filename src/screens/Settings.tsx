@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { InstallCard } from '../components/InstallCard'
 import { Overlay } from '../components/Overlay'
 import { Segmented } from '../components/Segmented'
@@ -16,11 +17,178 @@ import {
   setPauseMs,
 } from '../timing'
 import { getApiKey, hasApiKey, setApiKey } from '../openai'
-import { getSessionRuntime, startKeepAlive, stopKeepAlive } from '../session'
+import { getSessionRuntime, pickRecorderMime, startKeepAlive, stopKeepAlive } from '../session'
 import { toast } from '../toast'
 import type { BackupFile, SpeechLangPref } from '../types'
 import { coerceApproach, isSession, nowISO } from '../utils'
 import { ManualLog } from './ManualLog'
+import {
+  ENROLL_SECONDS,
+  VOICE_PROFILE_ID,
+  clearVoiceProfile,
+  enrollFromBlob,
+} from '../voice'
+
+function VoiceEnroll() {
+  const profile = useLiveQuery(() => db.voiceProfile.get(VOICE_PROFILE_ID))
+  const enrolled = Boolean(profile?.embedding && profile.embedding.length > 0)
+  const [phase, setPhase] = useState<'idle' | 'recording' | 'saving'>('idle')
+  const [elapsed, setElapsed] = useState(0)
+  const recRef = useRef<{
+    rec: MediaRecorder
+    stream: MediaStream
+    timer: ReturnType<typeof setInterval>
+    aborted: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    return () => {
+      const h = recRef.current
+      recRef.current = null
+      if (!h) return
+      h.aborted = true
+      clearInterval(h.timer)
+      try {
+        h.rec.stop()
+      } catch {
+        /* ignore */
+      }
+      h.stream.getTracks().forEach((track) => {
+        try {
+          track.stop()
+        } catch {
+          /* ignore */
+        }
+      })
+    }
+  }, [])
+
+  async function startRecord() {
+    if (phase !== 'idle') return
+    const gum = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices)
+    if (!gum || typeof MediaRecorder === 'undefined') {
+      toast('Microphone is not available on this device.')
+      return
+    }
+    let stream: MediaStream
+    try {
+      stream = await gum({ audio: true, video: false })
+    } catch {
+      toast('Mic is blocked in Chrome site settings.')
+      return
+    }
+    const mime = pickRecorderMime()
+    let rec: MediaRecorder
+    try {
+      rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+    } catch {
+      try {
+        rec = new MediaRecorder(stream)
+      } catch {
+        stream.getTracks().forEach((track) => track.stop())
+        toast('Could not start the audio recorder.')
+        return
+      }
+    }
+    const chunks: Blob[] = []
+    rec.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) chunks.push(ev.data)
+    }
+    rec.onstop = () => {
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop()
+        } catch {
+          /* ignore */
+        }
+      })
+      const handle = recRef.current
+      recRef.current = null
+      if (handle) clearInterval(handle.timer)
+      if (handle?.aborted) return
+      const type = rec.mimeType || mime || 'audio/webm'
+      const blob = new Blob(chunks, { type })
+      setPhase('saving')
+      void enrollFromBlob(blob)
+        .then(() => {
+          toast('Voice enrolled')
+        })
+        .catch(() => {
+          toast('Could not load the voice model')
+        })
+        .finally(() => {
+          setPhase('idle')
+          setElapsed(0)
+        })
+    }
+    rec.start(250)
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      const sec = Math.min(ENROLL_SECONDS, (Date.now() - startedAt) / 1000)
+      setElapsed(sec)
+      if (sec >= ENROLL_SECONDS) {
+        clearInterval(timer)
+        try {
+          rec.stop()
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 200)
+    recRef.current = { rec, stream, timer, aborted: false }
+    setElapsed(0)
+    setPhase('recording')
+  }
+
+  async function clearVoice() {
+    await clearVoiceProfile()
+    toast('Voice cleared')
+  }
+
+  const progress = Math.min(100, Math.round((elapsed / ENROLL_SECONDS) * 100))
+
+  return (
+    <>
+      <p className="section-title">My voice</p>
+      <p>{enrolled ? 'Enrolled' : 'Not enrolled'}</p>
+      {phase === 'recording' ? (
+        <>
+          <p role="status">Recording… {Math.min(ENROLL_SECONDS, Math.floor(elapsed))}/{ENROLL_SECONDS}s</p>
+          <div
+            className="voice-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={ENROLL_SECONDS}
+            aria-valuenow={Math.round(elapsed)}
+            aria-label="Voice enrollment"
+          >
+            <span style={{ width: `${progress}%` }} />
+          </div>
+        </>
+      ) : phase === 'saving' ? (
+        <p role="status">Saving your voice…</p>
+      ) : (
+        <div className="card-actions">
+          <button type="button" className="btn-primary" onClick={() => void startRecord()}>
+            Record my voice
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!enrolled}
+            onClick={() => void clearVoice()}
+          >
+            Clear voice
+          </button>
+        </div>
+      )}
+      <p className="muted">
+        Say a few sentences in your normal voice. Used only on this phone to match you.
+      </p>
+    </>
+  )
+}
+
 
 type Props = { onClose: () => void }
 
@@ -142,6 +310,8 @@ export function Settings({ onClose }: Props) {
             Android can keep the mic with the screen off. iPhone Safari stops audio when you leave
             Field — keep the app on screen.
           </p>
+
+          <VoiceEnroll />
 
           <p className="section-title">Recording</p>
           <label className="field">

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import { db } from '../db'
 import { resetInstallPrompt } from '../install'
 import { resetSessionRuntime } from '../session'
+import { resetEnrollmentToast, setVoiceTestHooks } from '../voice'
 
 beforeEach(async () => {
   vi.useRealTimers()
@@ -16,10 +17,13 @@ beforeEach(async () => {
   resetSessionRuntime()
   resetInstallPrompt()
   localStorage.clear()
+  setVoiceTestHooks({ enrolled: true, match: true })
+  resetEnrollmentToast()
   try {
     await db.approaches.clear()
     await db.sessions.clear()
     await db.audioClips.clear()
+    await db.voiceProfile.clear()
   } catch {
     /* db may not be open yet */
   }
