@@ -58,6 +58,7 @@ function modelJson(over: {
     exchangedContact,
     scheduled,
     rejection,
+    isApproach: true,
     model: 'gpt-4o-mini',
   }
 }

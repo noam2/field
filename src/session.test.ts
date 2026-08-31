@@ -25,9 +25,15 @@ import {
   SILENCE_MS,
   startKeepAlive,
   stopKeepAlive,
+  ENERGY_SAMPLE_SEC,
+  LOUD_OPEN_SEC,
+  NEAR_FIELD_RMS,
 } from './session'
 import * as understand from './understand'
+import * as transcribe from './transcribe'
 import { setIdleStopMs, setPauseMs } from './timing'
+
+const KEEP_TALK = "Hey I'm Maya. What do you do? Here's my number 555-867-5309."
 
 function setVisibility(state: DocumentVisibilityState) {
   Object.defineProperty(document, 'visibilityState', {
@@ -289,14 +295,18 @@ describe('SessionRuntime', () => {
     const Rec = vi.fn(function Rec() {
       return new FakeRecorder()
     }) as unknown as new (s: MediaStream) => FakeRecorder
+    let now = 1_000
     const rt = new SessionRuntime({
+      now: () => now,
       getUserMedia,
       MediaRecorder: Rec as never,
       SpeechRecognition: null,
       geolocation: null,
     })
     await rt.start()
-    rt.ingestSpeech("Hey I'm Maya. What do you do? Here's my number 555-867-5309.", true)
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    now += 12_000
     await rt.stop()
     await expect(db.approaches.count()).resolves.toBe(1)
     const row = await db.approaches.toCollection().first()
@@ -315,7 +325,9 @@ describe('SessionRuntime', () => {
     const Rec = vi.fn(function Rec() {
       return new FakeRecorder()
     }) as unknown as new (s: MediaStream) => FakeRecorder
+    let now = 1_000
     const rt = new SessionRuntime({
+      now: () => now,
       getUserMedia,
       MediaRecorder: Rec as never,
       SpeechRecognition: null,
@@ -323,6 +335,8 @@ describe('SessionRuntime', () => {
     })
     await rt.start()
     rt.ingestSpeech('Hello there, how is the week going for you today really?', true)
+    rt.addLoudSec(3)
+    now += 12_000
     await rt.stop()
     await rt.waitForBackground()
     expect(spy).not.toHaveBeenCalled()
@@ -347,6 +361,7 @@ describe('SessionRuntime', () => {
       exchangedContact: true,
       scheduled: false,
       rejection: false,
+      isApproach: true,
       model: 'gpt-4o-mini',
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -367,14 +382,18 @@ describe('SessionRuntime', () => {
     const Rec = vi.fn(function Rec() {
       return new FakeRecorder()
     }) as unknown as new (s: MediaStream) => FakeRecorder
+    let now = 1_000
     const rt = new SessionRuntime({
+      now: () => now,
       getUserMedia,
       MediaRecorder: Rec as never,
       SpeechRecognition: null,
       geolocation: null,
     })
     await rt.start()
-    rt.ingestSpeech("Hey I'm Maya. Here's my number.", true)
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    now += 12_000
     await rt.stop()
     await rt.waitForBackground()
     const row = await db.approaches.toCollection().first()
@@ -608,6 +627,7 @@ describe('SessionRuntime', () => {
     expect(rt.getSnapshot().phase).toBe('live')
     now = 60_000
     rt.ingestSpeech('hello there how is the week going for you today really?', true, now)
+    rt.addLoudSec(3)
     now = SILENCE_MS + 60_000
     expect(rt.checkSilence(now)).toBe(true)
     await rt.waitForBackground()
@@ -634,6 +654,7 @@ describe('SessionRuntime', () => {
     await rt.start()
     now = 10_000
     rt.ingestSpeech('hello there how is the week going for you today really?', true, now)
+    rt.addLoudSec(3)
     now = 10_000 + 29_000
     expect(rt.checkSilence(now)).toBe(false)
     now = 10_000 + 30_000
@@ -789,14 +810,19 @@ function liveRuntime(over: ConstructorParameters<typeof SessionRuntime>[0] = {})
     ? null
     : speechHarness()
   const getUserMedia = over.getUserMedia ?? vi.fn(async () => fakeStream())
+  let now = 1_000
+  const advance = (ms: number) => {
+    now += ms
+  }
   const rt = new SessionRuntime({
+    now: () => now,
     getUserMedia,
     MediaRecorder: Rec as never,
     SpeechRecognition: speech?.Ctor as never,
     geolocation: null,
     ...over,
   })
-  return { rt, Rec, speech, getUserMedia }
+  return { rt, Rec, speech, getUserMedia, advance }
 }
 
 
@@ -1001,9 +1027,11 @@ describe('leave/resume recording + speech', () => {
 
   it('resume with inactive recorder continues capturing without wiping pre-leave chunks', async () => {
     const saved = watchAudioAdds()
-    const { rt, Rec } = liveRuntime({ SpeechRecognition: null })
+    const { rt, Rec, advance } = liveRuntime({ SpeechRecognition: null })
     await rt.start()
     rt.ingestSpeech('hello there how is the week going for you today really?', true)
+    rt.addLoudSec(3)
+    advance(12_000)
     const rec = Rec.mock.results[0].value as FakeRecorder
     rec.ondataavailable?.({ data: new Blob(['PRELEAVE'], { type: 'audio/webm' }) })
     const recStop = vi.spyOn(rec, 'stop')
@@ -1073,7 +1101,9 @@ describe('leave/resume recording + speech', () => {
     const Rec = vi.fn(function Rec() {
       return new FakeRecorder()
     })
+    let now = 1_000
     const rt = new SessionRuntime({
+      now: () => now,
       getUserMedia,
       MediaRecorder: Rec as never,
       SpeechRecognition: null,
@@ -1081,6 +1111,8 @@ describe('leave/resume recording + speech', () => {
     })
     await rt.start()
     rt.ingestSpeech('hello there how is the week going for you today really?', true)
+    rt.addLoudSec(3)
+    now += 12_000
     const rec = Rec.mock.results[0].value as FakeRecorder
     rec.ondataavailable?.({ data: new Blob(['PRELEAVE'], { type: 'audio/webm' }) })
     expect(getUserMedia).toHaveBeenCalledTimes(1)
@@ -1099,5 +1131,106 @@ describe('leave/resume recording + speech', () => {
     expect(saved.length).toBeGreaterThan(0)
     const text = await blobText(saved[0])
     expect(text).toContain('PRELEAVE')
+  })
+})
+
+
+describe('clip keep gate + near-field energy', () => {
+  function gatedRuntime() {
+    let now = 1_000
+    const Rec = vi.fn(function Rec() {
+      return new FakeRecorder()
+    }) as unknown as new (s: MediaStream) => FakeRecorder
+    const rt = new SessionRuntime({
+      now: () => now,
+      getUserMedia: vi.fn(async () => fakeStream()),
+      MediaRecorder: Rec as never,
+      SpeechRecognition: null,
+      geolocation: null,
+    })
+    return {
+      rt,
+      Rec,
+      advance: (ms: number) => {
+        now += ms
+      },
+    }
+  }
+
+  it('energy blip rms 0.05 does not open a conversation', async () => {
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    expect(rt.hasOpenConversation()).toBe(false)
+    expect(rt.getSnapshot().recording).toBe(true)
+    rt.sampleEnergy(0.05)
+    expect(rt.hasOpenConversation()).toBe(false)
+    expect(rt.getLoudSecForTest()).toBe(0)
+    advance(IDLE_STOP_MS)
+    expect(await rt.checkIdleStop()).toBe(true)
+    expect(await db.approaches.count()).toBe(0)
+  })
+
+  it('loud frames accumulate loudSec and open after ~1.5s', async () => {
+    const { rt } = gatedRuntime()
+    await rt.start()
+    const framesToOpen = Math.ceil(LOUD_OPEN_SEC / ENERGY_SAMPLE_SEC)
+    for (let i = 0; i < framesToOpen - 1; i += 1) {
+      rt.sampleEnergy(NEAR_FIELD_RMS + 0.01)
+    }
+    expect(rt.hasOpenConversation()).toBe(false)
+    expect(rt.getLoudSecForTest()).toBeCloseTo((framesToOpen - 1) * ENERGY_SAMPLE_SEC)
+    rt.sampleEnergy(NEAR_FIELD_RMS + 0.01)
+    expect(rt.hasOpenConversation()).toBe(true)
+    expect(rt.getLoudSecForTest()).toBeCloseTo(framesToOpen * ENERGY_SAMPLE_SEC)
+    rt.sampleEnergy(NEAR_FIELD_RMS + 0.01)
+    expect(rt.getLoudSecForTest()).toBeCloseTo((framesToOpen + 1) * ENERGY_SAMPLE_SEC)
+    await rt.stop()
+  })
+
+  it('closeConversation does not put a DB row when the cheap gate fails', async () => {
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech('hi there friend', true)
+    expect(rt.hasOpenConversation()).toBe(true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    expect(await db.approaches.count()).toBe(0)
+    expect(await db.audioClips.count()).toBe(0)
+  })
+
+  it('puts a row when duration, words, and loudSec all pass', async () => {
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    expect(await db.approaches.count()).toBe(1)
+    expect(await db.audioClips.count()).toBe(1)
+  })
+
+  it('drops the approach when GPT says isApproach false', async () => {
+    setApiKey('sk-test-field')
+    vi.spyOn(transcribe, 'transcribeAudio').mockResolvedValue(KEEP_TALK)
+    vi.spyOn(understand, 'understandTranscript').mockResolvedValue({
+      ...understand.emptyInsight(),
+      isApproach: false,
+      summary: 'Ambient crowd, not an approach.',
+    })
+    const toasts: string[] = []
+    setToastListener((m) => toasts.push(m))
+    const { rt, advance } = gatedRuntime()
+    await rt.start()
+    rt.ingestSpeech(KEEP_TALK, true)
+    rt.addLoudSec(3)
+    advance(12_000)
+    await rt.stop()
+    await rt.waitForBackground()
+    expect(await db.approaches.count()).toBe(0)
+    expect(await db.audioClips.count()).toBe(0)
+    expect(toasts).not.toContain('Could not understand this conversation')
+    expect(toasts.filter((t) => /drop|crowd|approach/i.test(t))).toEqual([])
+    setToastListener(null)
   })
 })

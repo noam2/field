@@ -1,4 +1,12 @@
 import { analyzeTranscript, extractIntroName, tomorrowIso } from './analyze'
+import {
+  ENERGY_SAMPLE_SEC,
+  LOUD_OPEN_SEC,
+  MIN_OPEN_FINAL_WORDS,
+  NEAR_FIELD_RMS,
+  clipWordCount,
+  shouldKeepClip,
+} from './clipGate'
 import { db } from './db'
 import { getKeepAlive, speechRecognitionLang } from './lang'
 import { getIdleStopMs, getPauseMs } from './timing'
@@ -9,6 +17,8 @@ import { transcribeAudio } from './transcribe'
 import { proofTranscript, understandTranscript } from './understand'
 import { formatCoordPlace, nowISO } from './utils'
 import type { Approach, SpokenLanguage, UnderstandContext } from './types'
+
+export { NEAR_FIELD_RMS, ENERGY_SAMPLE_SEC, LOUD_OPEN_SEC } from './clipGate'
 
 export const SILENCE_MS = 60_000
 export const IDLE_STOP_MS = 10 * 60 * 1000
@@ -396,6 +406,9 @@ export class SessionRuntime {
   private analyser: AnalyserNode | null = null
   private audioCtx: AudioContext | null = null
   private energySource: MediaStreamAudioSourceNode | null = null
+  private loudSec = 0
+  private pendingLoudSec = 0
+  private stopping = false
 
   constructor(deps: SessionDeps = {}) {
     this.deps = deps
@@ -515,8 +528,11 @@ export class SessionRuntime {
     this.lastSpeechAt = null
     this.lastActivityAt = null
     this.idleStopping = false
+    this.stopping = false
     this.convId = null
     this.convStartedMs = null
+    this.loudSec = 0
+    this.pendingLoudSec = 0
     this.mime = pickRecorderMime()
     this.geoType = null
     this.geoClass = null
@@ -549,7 +565,7 @@ export class SessionRuntime {
     })
 
     this.bindTrackEnded(this.stream)
-    this.beginConversation()
+    this.startRecorder()
     this.startRecognition()
     this.beginWatch()
     void this.acquireWakeLock()
@@ -573,6 +589,7 @@ export class SessionRuntime {
       return
     }
     if (!this.snapshot.live && !this.snapshot.sessionId) return
+    this.stopping = true
     this.wantRecognition = false
     this.clearSilenceTimer()
     this.clearIdleWatch()
@@ -606,7 +623,10 @@ export class SessionRuntime {
     if (this.snapshot.live) {
       this.beginWatch()
       this.startRecognition()
-      if (!this.recorder || this.recorder.state === 'inactive') this.beginConversation()
+      if (!this.recorder || this.recorder.state === 'inactive') {
+        if (this.convId) this.startRecorder(true)
+        else this.startRecorder()
+      }
       return
     }
     void this.start()
@@ -617,7 +637,10 @@ export class SessionRuntime {
     const piece = text.trim()
     if (!piece) return
     this.markActivity(at)
-    if (!this.convId) this.beginConversation()
+    if (!this.convId) {
+      if (!isFinal || clipWordCount(piece) < MIN_OPEN_FINAL_WORDS) return
+      this.beginConversation()
+    }
     if (isFinal) {
       this.finalTranscript = `${this.finalTranscript} ${piece}`.replace(/\s+/g, ' ').trim()
       this.emit({ transcript: this.finalTranscript, interim: '' })
@@ -706,15 +729,35 @@ export class SessionRuntime {
     this.snapshot = emptySnapshot()
   }
 
+  hasOpenConversation(): boolean {
+    return this.convId != null
+  }
+
+  addLoudSec(n: number): void {
+    if (this.convId) this.loudSec += n
+    else this.pendingLoudSec += n
+  }
+
+  setLoudSecForTest(n: number): void {
+    if (this.convId) this.loudSec = n
+    else this.pendingLoudSec = n
+  }
+
+  getLoudSecForTest(): number {
+    return this.convId ? this.loudSec : this.pendingLoudSec
+  }
+
   private beginConversation(): void {
     if (!this.snapshot.live) return
-    if (this.recorder && this.recorder.state === 'recording') return
+    if (this.convId) return
     this.convId = crypto.randomUUID()
     this.convStartedMs = this.now()
     this.finalTranscript = ''
     this.chunks = []
+    this.loudSec = this.pendingLoudSec
+    this.pendingLoudSec = 0
     this.emit({ transcript: '', interim: '' })
-    this.startRecorder()
+    if (!this.recorder || this.recorder.state !== 'recording') this.startRecorder()
   }
 
   private startRecorder(keepChunks = false): void {
@@ -785,23 +828,31 @@ export class SessionRuntime {
     const startedMs = this.convStartedMs
     const transcript = this.finalTranscript.trim()
     const interim = this.snapshot.interim
+    const loudSec = this.loudSec
     await this.stopRecorder()
     this.recorder = null
     this.convId = null
     this.convStartedMs = null
     this.lastSpeechAt = null
+    this.loudSec = 0
+    this.pendingLoudSec = 0
     const combined = `${transcript} ${interim}`.replace(/\s+/g, ' ').trim()
     this.emit({ transcript: '', interim: '' })
+    const chunks = this.chunks
+    this.chunks = []
+    this.finalTranscript = ''
+    const keepRecording = this.snapshot.live && !this.stopping
+    if (keepRecording) this.startRecorder()
     if (!convId || startedMs == null) return
     const durationSec = Math.max(0, Math.round((this.now() - startedMs) / 1000))
-    if (!combined && this.chunks.length === 0) return
-    if (!combined && durationSec < 2) return
+    const wordCount = clipWordCount(combined)
+    if (!shouldKeepClip({ durationSec, wordCount, loudSec })) return
 
     const run = async () => {
       const analysis = analyzeTranscript(combined, durationSec)
       const who = extractIntroName(combined) ?? ''
       const mime = this.mime || 'audio/webm'
-      const blob = this.chunks.length > 0 ? new Blob(this.chunks, { type: mime }) : null
+      const blob = chunks.length > 0 ? new Blob(chunks, { type: mime }) : null
       const audioId = blob && blob.size > 0 ? crypto.randomUUID() : null
       if (audioId && blob) {
         await db.audioClips.add({
@@ -868,8 +919,6 @@ export class SessionRuntime {
     }
     this.writeChain = this.writeChain.then(run, run)
     await this.writeChain
-    this.chunks = []
-    this.finalTranscript = ''
   }
 
   private async enrichConversation(
@@ -902,6 +951,15 @@ export class SessionRuntime {
       const raw = await understandTranscript(text, ctx)
       const existing = await db.approaches.get(id)
       if (!existing) return
+      if (raw.isApproach === false) {
+        await db.approaches.delete(id)
+        if (existing.audioId) await db.audioClips.delete(existing.audioId)
+        await db.audioClips.where('conversationId').equals(id).delete()
+        if (this.snapshot.conversationCount > 0) {
+          this.emit({ conversationCount: this.snapshot.conversationCount - 1 })
+        }
+        return
+      }
       const insight = mergePlaceSignals(raw, existing.place || ctx.place, existing.at, {
         nominatimType: geo?.nominatimType,
         nominatimClass: geo?.nominatimClass,
@@ -1275,7 +1333,7 @@ export class SessionRuntime {
       return
     }
     if (this.convId) this.startRecorder(true)
-    else this.beginConversation()
+    else this.startRecorder()
   }
 
   private async ensureCapture(): Promise<void> {
@@ -1405,27 +1463,37 @@ export class SessionRuntime {
       this.analyser = analyser
       this.energySource = source
       void ctx.resume?.()
-      this.energyTimer = setInterval(() => this.sampleEnergy(), 250)
+      this.energyTimer = setInterval(() => this.sampleEnergy(), ENERGY_SAMPLE_SEC * 1000)
     } catch {
       this.stopEnergyMonitor()
     }
   }
 
-  private sampleEnergy(): void {
-    if (!this.analyser || !this.snapshot.live) return
-    try {
-      const buf = new Float32Array(this.analyser.fftSize)
-      this.analyser.getFloatTimeDomainData(buf as Parameters<AnalyserNode['getFloatTimeDomainData']>[0])
-      let sum = 0
-      for (let i = 0; i < buf.length; i += 1) sum += buf[i] * buf[i]
-      const rms = Math.sqrt(sum / buf.length)
-      if (rms > 0.04) {
-        this.markActivity()
-        if (!this.convId) this.beginConversation()
+  sampleEnergy(rmsOverride?: number): void {
+    if (!this.snapshot.live) return
+    let rms = rmsOverride
+    if (rms == null) {
+      if (!this.analyser) return
+      try {
+        const buf = new Float32Array(this.analyser.fftSize)
+        this.analyser.getFloatTimeDomainData(
+          buf as Parameters<AnalyserNode['getFloatTimeDomainData']>[0],
+        )
+        let sum = 0
+        for (let i = 0; i < buf.length; i += 1) sum += buf[i] * buf[i]
+        rms = Math.sqrt(sum / buf.length)
+      } catch {
+        return
       }
-    } catch {
-      /* analyser optional */
     }
+    if (rms <= NEAR_FIELD_RMS) return
+    this.markActivity()
+    if (this.convId) {
+      this.loudSec += ENERGY_SAMPLE_SEC
+      return
+    }
+    this.pendingLoudSec += ENERGY_SAMPLE_SEC
+    if (this.pendingLoudSec >= LOUD_OPEN_SEC) this.beginConversation()
   }
 
   private stopEnergyMonitor(): void {

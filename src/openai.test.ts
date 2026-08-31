@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSpeechLang } from './lang'
 import { getApiKey, hasApiKey, openaiHeaders, setApiKey } from './openai'
 import { transcribeAudio } from './transcribe'
-import { INSIGHT_JSON_SCHEMA, parseInsightJson, parseProofJson, understandTranscript } from './understand'
+import { emptyInsight, INSIGHT_JSON_SCHEMA, parseInsightJson, parseProofJson, understandTranscript } from './understand'
 
 const VALID = {
   sentiment: 'positive',
@@ -20,6 +20,7 @@ const VALID = {
   exchangedContact: true,
   scheduled: false,
   rejection: false,
+  isApproach: true,
   model: 'gpt-4o-mini',
 }
 
@@ -81,6 +82,21 @@ describe('parseInsightJson', () => {
   it('requires scene on the strict schema', () => {
     expect(INSIGHT_JSON_SCHEMA.properties.scene).toEqual({ type: 'string' })
     expect(INSIGHT_JSON_SCHEMA.required).toContain('scene')
+  })
+
+  it('requires isApproach on the schema and parses true/false', () => {
+    expect(INSIGHT_JSON_SCHEMA.properties.isApproach).toEqual({ type: 'boolean' })
+    expect(INSIGHT_JSON_SCHEMA.required).toContain('isApproach')
+    expect(parseInsightJson(VALID)?.isApproach).toBe(true)
+    expect(parseInsightJson({ ...VALID, isApproach: false })?.isApproach).toBe(false)
+    const missing = { ...VALID } as Record<string, unknown>
+    delete missing.isApproach
+    expect(parseInsightJson(missing)?.isApproach).toBe(false)
+    expect(parseInsightJson({ ...VALID, isApproach: 'yes' })).toBeNull()
+  })
+
+  it('emptyInsight has isApproach false', () => {
+    expect(emptyInsight().isApproach).toBe(false)
   })
 
   it('rejects garbage, valence 4, and bad sentiment', () => {

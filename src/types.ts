@@ -73,6 +73,7 @@ export type Insight = {
   exchangedContact: boolean
   scheduled: boolean
   rejection: boolean
+  isApproach: boolean
   model: string
   placeType?: PlaceType
   daypart?: Daypart
